@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  PROJECT_URL: https://github.com/ErickGuerron/Formularios-control-cambios.git
+  PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
   ORG_LOGIN: MyCSW
   USER_LOGIN: ErickGuerron
   PROJECT_NUMBER: 1
@@ -60,7 +60,7 @@ jobs:
 
   add-to-project:
     needs: labels
-    if: contains(github.event.issue.labels.*.name, 'rfc') && github.event.action == 'opened'
+    if: (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'rfc')) || (github.event.action == 'labeled' && github.event.label.name == 'rfc')
     runs-on: ubuntu-latest
     steps:
       - name: Add to Project
@@ -70,8 +70,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   map-fields:
-    needs: [labels, add-to-project]
-    if: contains(github.event.issue.labels.*.name, 'rfc')
+    needs: labels
     runs-on: ubuntu-latest
     steps:
       - name: Map Issue Form → Project fields
@@ -95,7 +94,7 @@ jobs:
                 const nodes = tryOrg.organization.projectsV2.nodes
                 let hit = nodes.find(n => n.number === PROJECT_NUMBER)
                 if (!hit && PROJECT_TITLE) hit = nodes.find(n => n.title === PROJECT_TITLE)
-                if (hit) return { id: hit.id, scope: 'org' }
+                if (hit) return { id: hit.id }
               }
               const tryUser = await github.graphql(
                 `query($login:String!){
@@ -108,9 +107,9 @@ jobs:
                 const nodes = tryUser.user.projectsV2.nodes
                 let hit = nodes.find(n => n.number === PROJECT_NUMBER)
                 if (!hit && PROJECT_TITLE) hit = nodes.find(n => n.title === PROJECT_TITLE)
-                if (hit) return { id: hit.id, scope: 'user' }
+                if (hit) return { id: hit.id }
               }
-              throw new Error('No se encontró un ProjectV2 que coincida por número o título en ORG o USER')
+              throw new Error('Project v2 no encontrado')
             }
             const project = await findProjectV2()
             const projectId = project.id
@@ -180,7 +179,7 @@ jobs:
               }`, { projectId, q: String(issue.number) }
             )
             const item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
-            if (!item) throw new Error('Project Item no encontrado para esta issue')
+            if (!item) throw new Error('Project Item no encontrado')
             const itemId = item.id
             async function setText(fieldId, val){
               if(!fieldId || !val) return
