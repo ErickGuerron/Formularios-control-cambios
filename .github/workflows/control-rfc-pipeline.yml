@@ -14,11 +14,11 @@ permissions:
   contents: read
 
 env:
-  PROJECT_OWNER_TYPE: user
+  PROJECT_URL: https://github.com/ErickGuerron/Formularios-control-cambios.git
   ORG_LOGIN: MyCSW
   USER_LOGIN: ErickGuerron
   PROJECT_NUMBER: 1
-  PROJECT_URL: https://github.com/ErickGuerron/Formularios-control-cambios.git
+  PROJECT_TITLE: Formularios-control-cambios
 
 jobs:
   labels:
@@ -70,7 +70,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   map-fields:
-    needs: labels
+    needs: [labels, add-to-project]
     if: contains(github.event.issue.labels.*.name, 'rfc')
     runs-on: ubuntu-latest
     steps:
@@ -79,21 +79,41 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const ownerType = process.env.PROJECT_OWNER_TYPE
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
-            const FIELDS = {
-              tipo: 'Tipo de cambio',
-              riesgo: 'Riesgo',
-              impacto: 'Impacto',
-              plan: 'Plan de implementación',
-              rollback: 'Plan de reversa (rollback)',
-              pruebas: 'Plan de pruebas',
-              aprob: 'Aprobadores requeridos',
-              vInicio: 'Ventana – Inicio',
-              vFin: 'Ventana – Fin'
+            const PROJECT_TITLE = process.env.PROJECT_TITLE
+            async function findProjectV2() {
+              const tryOrg = await github.graphql(
+                `query($login:String!){
+                  organization(login:$login){
+                    projectsV2(first:50){ nodes{ id title number } }
+                  }
+                }`, { login: ORG_LOGIN }
+              ).catch(()=>null)
+              if (tryOrg?.organization?.projectsV2?.nodes?.length) {
+                const nodes = tryOrg.organization.projectsV2.nodes
+                let hit = nodes.find(n => n.number === PROJECT_NUMBER)
+                if (!hit && PROJECT_TITLE) hit = nodes.find(n => n.title === PROJECT_TITLE)
+                if (hit) return { id: hit.id, scope: 'org' }
+              }
+              const tryUser = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){
+                    projectsV2(first:50){ nodes{ id title number } }
+                  }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null)
+              if (tryUser?.user?.projectsV2?.nodes?.length) {
+                const nodes = tryUser.user.projectsV2.nodes
+                let hit = nodes.find(n => n.number === PROJECT_NUMBER)
+                if (!hit && PROJECT_TITLE) hit = nodes.find(n => n.title === PROJECT_TITLE)
+                if (hit) return { id: hit.id, scope: 'user' }
+              }
+              throw new Error('No se encontró un ProjectV2 que coincida por número o título en ORG o USER')
             }
+            const project = await findProjectV2()
+            const projectId = project.id
             const issue = context.payload.issue
             const repo = context.repo
             const body = issue.body || ''
@@ -102,6 +122,7 @@ jobs:
               const m = body.match(re)
               return m ? m[1].trim() : ''
             }
+            const toDateOnly = (s) => (s.match(/(\\d{4}-\\d{2}-\\d{2})/)||[])[1] || ''
             const tipo     = grab('Tipo de cambio')
             const riesgo   = grab('Riesgo')
             const impacto  = grab('Impacto')
@@ -111,59 +132,65 @@ jobs:
             const vIniTxt  = grab('Ventana \\(inicio\\)')
             const vFinTxt  = grab('Ventana \\(fin\\)')
             const aprob    = grab('Aprobadores requeridos')
-            const toDateOnly = (s) => (s.match(/(\\d{4}-\\d{2}-\\d{2})/)||[])[1] || ''
-            let projectQuery, vars
-            if (ownerType === 'org') {
-              projectQuery = `query($owner:String!, $num:Int!){ organization(login:$owner){ projectV2(number:$num){ id title } } }`
-              vars = { owner: ORG_LOGIN, num: PROJECT_NUMBER }
-            } else {
-              projectQuery = `query($owner:String!, $num:Int!){ user(login:$owner){ projectV2(number:$num){ id title } } }`
-              vars = { owner: USER_LOGIN, num: PROJECT_NUMBER }
-            }
-            const projRes = await github.graphql(projectQuery, vars)
-            const projectV2 = ownerType==='org' ? projRes.organization?.projectV2 : projRes.user?.projectV2
-            if (!projectV2?.id) throw new Error('Project v2 no encontrado. Revisa PROJECT_OWNER_TYPE/ORG_LOGIN/USER_LOGIN/PROJECT_NUMBER')
-            const projectId = projectV2.id
             const issueRes = await github.graphql(
-              `query($owner:String!, $name:String!, $n:Int!){ repository(owner:$owner, name:$name){ issue(number:$n){ id number } } }`,
-              { owner: repo.owner, name: repo.repo, n: issue.number }
+              `query($owner:String!, $name:String!, $n:Int!){
+                repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
+              }`, { owner: repo.owner, name: repo.repo, n: issue.number }
             )
             const issueId = issueRes.repository.issue.id
             await github.graphql(
-              `mutation($projectId:ID!, $contentId:ID!){ addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } } }`,
-              { projectId, contentId: issueId }
+              `mutation($projectId:ID!, $contentId:ID!){
+                addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
+              }`, { projectId, contentId: issueId }
             )
             const fieldsRes = await github.graphql(
-              `query($projectId:ID!){ node(id:$projectId){ ... on ProjectV2 { fields(first:50){ nodes{ ... on ProjectV2FieldCommon { id name dataType } ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }`,
-              { projectId }
+              `query($projectId:ID!){
+                node(id:$projectId){
+                  ... on ProjectV2 {
+                    fields(first:50){
+                      nodes{
+                        ... on ProjectV2FieldCommon { id name dataType }
+                        ... on ProjectV2SingleSelectField { id name options { id name } }
+                      }
+                    }
+                  }
+                }
+              }`, { projectId }
             )
             const nodes = fieldsRes.node.fields.nodes
-            const findField = (name) => nodes.find(f => f.name === name)
-            const fTipo    = findField(FIELDS.tipo)
-            const fRiesgo  = findField(FIELDS.riesgo)
-            const fImpacto = findField(FIELDS.impacto)
-            const fPlan    = findField(FIELDS.plan)
-            const fRollback= findField(FIELDS.rollback)
-            const fPruebas = findField(FIELDS.pruebas)
-            const fAprob   = findField(FIELDS.aprob)
-            const fVIni    = findField(FIELDS.vInicio)
-            const fVFin    = findField(FIELDS.vFin)
+            const byName = n => nodes.find(f => f.name === n)
+            const fTipo    = byName('Tipo de cambio')
+            const fRiesgo  = byName('Riesgo')
+            const fImpacto = byName('Impacto')
+            const fPlan    = byName('Plan de implementación')
+            const fRollback= byName('Plan de reversa (rollback)')
+            const fPruebas = byName('Plan de pruebas')
+            const fAprob   = byName('Aprobadores requeridos')
+            const fVIni    = byName('Ventana – Inicio')
+            const fVFin    = byName('Ventana – Fin')
             const itemsRes = await github.graphql(
-              `query($projectId:ID!, $num:String!){ node(id:$projectId){ ... on ProjectV2 { items(first:50, query:$num){ nodes{ id content{ ... on Issue { number } } } } } } }`,
-              { projectId, num: String(issue.number) }
+              `query($projectId:ID!, $q:String!){
+                node(id:$projectId){
+                  ... on ProjectV2 {
+                    items(first:50, query:$q){
+                      nodes{ id content{ ... on Issue { number } } }
+                    }
+                  }
+                }
+              }`, { projectId, q: String(issue.number) }
             )
             const item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
             if (!item) throw new Error('Project Item no encontrado para esta issue')
             const itemId = item.id
-            const updateText = async (fieldId, value) => {
-              if(!fieldId || !value) return
+            async function setText(fieldId, val){
+              if(!fieldId || !val) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
-                }`, { projectId, itemId, fieldId, val: value }
+                }`, { projectId, itemId, fieldId, val }
               )
             }
-            const updateDate = async (fieldId, ymd) => {
+            async function setDate(fieldId, ymd){
               if(!fieldId || !ymd) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
@@ -171,7 +198,7 @@ jobs:
                 }`, { projectId, itemId, fieldId, val: ymd }
               )
             }
-            const updateSelect = async (field, optionName) => {
+            async function setSelect(field, optionName){
               if(!field || !optionName) return
               const opt = (field.options||[]).find(o => o.name.toLowerCase() === optionName.toLowerCase())
               if(!opt) return
@@ -181,12 +208,12 @@ jobs:
                 }`, { projectId, itemId, fieldId: field.id, opt: opt.id }
               )
             }
-            await updateSelect(fTipo,   tipo)
-            await updateSelect(fRiesgo, riesgo)
-            await updateText  (fImpacto?.id, impacto)
-            await updateText  (fPlan?.id,    plan)
-            await updateText  (fRollback?.id,rollback)
-            await updateText  (fPruebas?.id, pruebas)
-            await updateText  (fAprob?.id,   aprob)
-            await updateDate  (fVIni?.id,    toDateOnly(vIniTxt))
-            await updateDate  (fVFin?.id,    toDateOnly(vFinTxt))
+            await setSelect(fTipo,   tipo)
+            await setSelect(fRiesgo, riesgo)
+            await setText  (fImpacto?.id, impacto)
+            await setText  (fPlan?.id,    plan)
+            await setText  (fRollback?.id,rollback)
+            await setText  (fPruebas?.id, pruebas)
+            await setText  (fAprob?.id,   aprob)
+            await setDate  (fVIni?.id,    toDateOnly(vIniTxt))
+            await setDate  (fVFin?.id,    toDateOnly(vFinTxt))
