@@ -210,40 +210,36 @@ jobs:
 
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
 
-            const mapToken = (fieldName, value) => {
+            function candidateTokens(fieldName, value){
               const v = norm(value)
+              const tokens = new Set([v])
               if (/change type|tipo de cambio/i.test(fieldName)) {
-                if (['estandar','estándar','standard','std'].includes(v)) return 'standard'
-                if (['normal','routine','rutina'].includes(v))           return 'normal'
-                if (['emergencia','emergency'].includes(v))              return 'emergency'
+                if (v.includes('estandar') || v.includes('estándar') || v.includes('standard') || v === 'std') {
+                  tokens.add('estandar'); tokens.add('standard')
+                }
+                if (v.includes('normal') || v.includes('routine') || v.includes('rutina')) {
+                  tokens.add('normal')
+                }
+                if (v.includes('emergencia') || v.includes('emergency')) {
+                  tokens.add('emergency'); tokens.add('emergencia')
+                }
               }
               if (/risk|riesgo/i.test(fieldName)) {
-                if (['bajo','low'].includes(v))                          return 'low'
-                if (['medio','medium','moderate','moderado'].includes(v))return 'medium'
-                if (['alto','high'].includes(v))                         return 'high'
+                if (v.includes('bajo') || v.includes('low')) { tokens.add('low'); tokens.add('bajo') }
+                if (v.includes('medio') || v.includes('medium') || v.includes('moderate') || v.includes('moderado')) {
+                  tokens.add('medium'); tokens.add('medio'); tokens.add('moderate')
+                }
+                if (v.includes('alto') || v.includes('high')) { tokens.add('high'); tokens.add('alto') }
               }
-              return v
+              return [...tokens]
             }
 
             async function setSelect(field, optionName){
               if(!field || !optionName) return
-              const token = mapToken(field.name, optionName)
               const opts = field.options || []
-              let opt = opts.find(o => norm(o.name) === token)
-              if(!opt)   opt = opts.find(o => norm(o.name).includes(token) || token.includes(norm(o.name)))
-              if(!opt) {
-                const synonyms = {
-                  standard:['standard'],
-                  normal:['normal'],
-                  emergency:['emergency'],
-                  low:['low'],
-                  medium:['medium','moderate'],
-                  high:['high']
-                }
-                for (const [k, vals] of Object.entries(synonyms)) {
-                  if (vals.includes(token)) { opt = opts.find(o => norm(o.name).includes(k)); break }
-                }
-              }
+              const cands = candidateTokens(field.name, optionName)
+              let opt = opts.find(o => cands.includes(norm(o.name)))
+              if(!opt) opt = opts.find(o => cands.some(t => norm(o.name).includes(t) || t.includes(norm(o.name))))
               if(!opt) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
