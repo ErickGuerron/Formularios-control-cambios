@@ -1,0 +1,82 @@
+name: "Solicitud de Cambio (RFC)"
+description: "Proponer un cambio con evaluación de riesgo/impacto y plan de reversa."
+title: "[RFC] <título breve del cambio>"
+labels: ["rfc", "change-request"]
+assignees: []
+body:
+  - type: input
+    id: solicitante
+    attributes:
+      label: Solicitante
+      description: Nombre y área de quien solicita.
+      placeholder: "Nombre Apellido - Área"
+    validations: { required: true }
+
+  - type: dropdown
+    id: tipo_cambio
+    attributes:
+      label: Tipo de cambio
+      options: ["Estándar", "Normal", "Emergencia"]
+    validations: { required: true }
+
+  - type: dropdown
+    id: riesgo
+    attributes:
+      label: Riesgo
+      options: ["Bajo", "Medio", "Alto"]
+    validations: { required: true }
+
+  - type: textarea
+    id: impacto
+    attributes:
+      label: Impacto
+      description: "Usuarios/sistemas afectados y downtime estimado."
+      placeholder: "Ej.: Afecta API pagos y web pública. Downtime 20 min."
+    validations: { required: true }
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan de implementación
+      description: "Pasos claros y ordenados."
+      placeholder: "1) Respaldar BD\n2) Desplegar versión X\n3) Verificar healthchecks"
+    validations: { required: true }
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Plan de reversa (rollback)
+      description: "Cómo volver al estado previo si algo falla."
+      placeholder: "Restaurar snapshot de BD y revertir despliegue a versión anterior."
+    validations: { required: true }
+
+  - type: textarea
+    id: pruebas
+    attributes:
+      label: Plan de pruebas
+      description: "Antes y después; criterios de aceptación."
+      placeholder: "Smoke tests, checkout de compra, métricas 2xx/5xx estables."
+    validations: { required: true }
+
+  - type: input
+    id: ventana
+    attributes:
+      label: Ventana del cambio
+      description: "Inicio–Fin con zona horaria."
+      placeholder: "2025-11-02 20:00–22:00 America/Guayaquil"
+    validations: { required: true }
+
+  - type: input
+    id: aprobadores
+    attributes:
+      label: Aprobadores requeridos
+      description: "Correos o @handles de dueños de servicio / seguridad / CAB."
+      placeholder: "dueño-servicio@empresa.com; seguridad@empresa.com"
+    validations: { required: true }
+
+  - type: input
+    id: dependencias
+    attributes:
+      label: Dependencias
+      description: "Servicios/CI/IDs relacionados (opcional)."
+      placeholder: "api-pagos, db-clientes"

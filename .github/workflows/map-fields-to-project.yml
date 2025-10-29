@@ -1,0 +1,105 @@
+name: Map RFC fields to Project
+on:
+  issues:
+    types: [opened, edited]
+jobs:
+  map:
+    if: contains(github.event.issue.labels.*.name, 'rfc')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      repository-projects: write
+    steps:
+      - name: Map fields with GraphQL
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue
+            const body = issue.body || ""
+
+            const get = (label) => {
+              const r = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([^\\n]+)`, 'i')
+              const m = body.match(r)
+              return m ? m[1].trim() : ""
+            }
+
+            const tipo = get("Tipo de cambio")
+            const riesgo = get("Riesgo")
+            const ventana = get("Ventana del cambio") // "YYYY-MM-DD HH:mm–HH:mm TZ" (parsea si necesitas inicio/fin por separado)
+            const impacto = get("Impacto")
+            const plan = get("Plan de implementación")
+            const rollback = get("Plan de reversa (rollback)")
+            const pruebas = get("Plan de pruebas")
+            const aprobadores = get("Aprobadores requeridos")
+
+            const projectNumber = 1
+            const org = 'TU_ORG'
+            // Busca el project nodeId
+            const projectRes = await github.graphql(`
+              query($org:String!, $number:Int!) {
+                organization(login:$org){
+                  projectV2(number:$number){ id }
+                }
+              }`, { org, number: projectNumber })
+            const projectId = projectRes.organization.projectV2.id
+
+            // Obtén el item del project a partir de la issue:
+            // Si usaste add-to-project, ya existe; si no, puedes crearlo o buscarlo
+            // Aquí ejemplo de búsqueda rápida:
+            const itemRes = await github.graphql(`
+              query($projectId:ID!, $q:String!) {
+                search(type: ISSUE, query: $q, first: 1) {
+                  nodes {
+                    ... on Issue {
+                      id
+                      projectItems(first:20) {
+                        nodes { id project { id } }
+                      }
+                    }
+                  }
+                }
+              }`, { projectId, q: `repo:${context.repo.owner}/${context.repo.repo} is:issue number:${issue.number}` })
+
+            const issueNode = itemRes.search.nodes[0]
+
+            const fields = {
+              tipo: { id: 'FIELD_ID_TIPO', kind:'singleSelect', optionMap: { 'Estándar':'OPTION_ID_STD', 'Normal':'OPTION_ID_NOR', 'Emergencia':'OPTION_ID_EME' } },
+              riesgo: { id: 'FIELD_ID_RIESGO', kind:'singleSelect', optionMap: { 'Bajo':'OPT_LOW', 'Medio':'OPT_MED', 'Alto':'OPT_HIGH' } },
+              impacto: { id: 'FIELD_ID_IMPACTO', kind:'text' },
+              plan: { id: 'FIELD_ID_PLAN', kind:'text' },
+              rollback: { id: 'FIELD_ID_ROLLBACK', kind:'text' },
+              pruebas: { id: 'FIELD_ID_PRUEBAS', kind:'text' },
+              aprobadores: { id: 'FIELD_ID_APROB', kind:'text' },
+              // ventana: si separas Inicio/Fin, crea dos campos Date distintos
+            }
+
+            const updateText = async (fieldId, value) => {
+              if(!value) return
+              await github.graphql(`
+                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $value:String!) {
+                  updateProjectV2ItemFieldValue(input:{
+                    projectId:$projectId, itemId:$itemId, fieldId:$fieldId,
+                    value:{ text:$value }
+                  }){ clientMutationId }
+                }`, { projectId, itemId: issueNode.projectItems.nodes[0].id, fieldId, value })
+            }
+
+            const updateSelect = async (fieldId, optionId) => {
+              if(!optionId) return
+              await github.graphql(`
+                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt: String!) {
+                  updateProjectV2ItemFieldValue(input:{
+                    projectId:$projectId, itemId:$itemId, fieldId:$fieldId,
+                    value:{ singleSelectOptionId:$opt }
+                  }){ clientMutationId }
+                }`, { projectId, itemId: issueNode.projectItems.nodes[0].id, fieldId, opt: optionId })
+            }
+
+            await updateSelect(fields.tipo.id, fields.tipo.optionMap[tipo])
+            await updateSelect(fields.riesgo.id, fields.riesgo.optionMap[riesgo])
+            await updateText(fields.impacto.id, impacto)
+            await updateText(fields.plan.id, plan)
+            await updateText(fields.rollback.id, rollback)
+            await updateText(fields.pruebas.id, pruebas)
+            await updateText(fields.aprobadores.id, aprobadores)
