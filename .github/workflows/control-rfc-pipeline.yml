@@ -207,7 +207,7 @@ jobs:
             async function setDate(fieldId, ymd){
               if(!fieldId || !ymd) return
               await github.graphql(
-                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:Date!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId, val: ymd }
               )
