@@ -1,4 +1,4 @@
-name: RFC Controller (Project v2)
+name: RFC Controller
 
 on:
   issues:
@@ -13,34 +13,65 @@ permissions:
   repository-projects: write
   contents: read
 
+env:
+  PROJECT_OWNER_TYPE: user
+  ORG_LOGIN: MyCSW
+  USER_LOGIN: ErickGuerron
+  PROJECT_NUMBER: 1
+  PROJECT_URL: https://github.com/ErickGuerron/Formularios-control-cambios.git
+
 jobs:
-  check-eligibility:
+  labels:
     runs-on: ubuntu-latest
-    outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
     steps:
-      - id: gate
-        run: |
-          # Solo continuar si la issue tiene la etiqueta rfc
-          if echo "${{ toJson(github.event.issue.labels) }}" | grep -iq '"name":"rfc"'; then
-            echo "proceed=true" >> $GITHUB_OUTPUT
-          else
-            echo "proceed=false" >> $GITHUB_OUTPUT
+      - name: Ensure labels
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue
+            const owner = context.repo.owner
+            const repo  = context.repo.repo
+            const body = issue.body || ''
+            const grab = (label) => {
+              const re = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([\\s\\S]*?)(?:\\n\\*\\*|$)`, 'i')
+              const m = body.match(re)
+              return m ? m[1].trim() : ''
+            }
+            const tipo   = grab('Tipo de cambio').toLowerCase()
+            const riesgo = grab('Riesgo').toLowerCase()
+            const wanted = new Set(['rfc'])
+            if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
+            if (tipo.includes('normal'))                               wanted.add('tipo:normal')
+            if (tipo.includes('emergencia'))                           wanted.add('tipo:emergencia')
+            if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo')
+            if (riesgo.includes('medio')) wanted.add('riesgo:medio')
+            if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
+            const current = new Set((issue.labels || []).map(l => l.name))
+            const managed = ['rfc','tipo:estandar','tipo:normal','tipo:emergencia','riesgo:bajo','riesgo:medio','riesgo:alto']
+            const toAdd = [...wanted].filter(l => !current.has(l))
+            const toRemove = [...current].filter(l => managed.includes(l) && !wanted.has(l))
+            if (toRemove.length) {
+              await github.rest.issues.removeLabels({ owner, repo, issue_number: issue.number, labels: toRemove }).catch(()=>{})
+            }
+            if (toAdd.length) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: toAdd })
+            }
 
   add-to-project:
-    needs: check-eligibility
-    if: needs.check-eligibility.outputs.proceed == 'true' && github.event.action != 'edited'
+    needs: labels
+    if: contains(github.event.issue.labels.*.name, 'rfc') && github.event.action == 'opened'
     runs-on: ubuntu-latest
     steps:
       - name: Add to Project
         uses: actions/add-to-project@v0.5.0
         with:
-          project-url: https://github.com/orgs/TU_ORG/projects/1   # <— AJUSTA
+          project-url: ${{ env.PROJECT_URL }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   map-fields:
-    needs: [check-eligibility, add-to-project]
-    if: needs.check-eligibility.outputs.proceed == 'true'
+    needs: labels
+    if: contains(github.event.issue.labels.*.name, 'rfc')
     runs-on: ubuntu-latest
     steps:
       - name: Map Issue Form → Project fields
@@ -48,9 +79,11 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const ORG_LOGIN = 'TU_ORG'         // <— AJUSTA (org o user)
-            const PROJECT_NUMBER = 1           // <— AJUSTA (número del Project)
-            const F = {
+            const ownerType = process.env.PROJECT_OWNER_TYPE
+            const ORG_LOGIN = process.env.ORG_LOGIN
+            const USER_LOGIN = process.env.USER_LOGIN
+            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
+            const FIELDS = {
               tipo: 'Tipo de cambio',
               riesgo: 'Riesgo',
               impacto: 'Impacto',
@@ -59,12 +92,11 @@ jobs:
               pruebas: 'Plan de pruebas',
               aprob: 'Aprobadores requeridos',
               vInicio: 'Ventana – Inicio',
-              vFin: 'Ventana – Fin',
+              vFin: 'Ventana – Fin'
             }
-
             const issue = context.payload.issue
+            const repo = context.repo
             const body = issue.body || ''
-            // helpers para extraer bloques del Issue Form
             const grab = (label) => {
               const re = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([\\s\\S]*?)(?:\\n\\*\\*|$)`, 'i')
               const m = body.match(re)
@@ -76,126 +108,85 @@ jobs:
             const plan     = grab('Plan de implementación')
             const rollback = grab('Plan de reversa \\(rollback\\)')
             const pruebas  = grab('Plan de pruebas')
-            const vinicio  = grab('Ventana \\(inicio\\)')
-            const vfin     = grab('Ventana \\(fin\\)')
+            const vIniTxt  = grab('Ventana \\(inicio\\)')
+            const vFinTxt  = grab('Ventana \\(fin\\)')
             const aprob    = grab('Aprobadores requeridos')
-            const toDate = s => (s.match(/(\d{4}-\d{2}-\d{2})/)||[])[1] || ''
-
-            // 1) Resolver Project y Issue IDs
-            const proj = await github.graphql(`
-              query($org:String!, $num:Int!){
-                organization(login:$org){ projectV2(number:$num){ id } }
-              }`, { org: ORG_LOGIN, num: PROJECT_NUMBER })
-            const projectId = proj.organization.projectV2.id
-
-            const issueQ = await github.graphql(`
-              query($owner:String!, $name:String!, $n:Int!){
-                repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
-              }`, { owner: context.repo.owner, name: context.repo.repo, n: issue.number })
-            const issueId = issueQ.repository.issue.id
-
-            // 2) Asegurar que el item exista en el Project (idempotente)
-            await github.graphql(`
-              mutation($projectId:ID!, $contentId:ID!){
-                addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
-              }`, { projectId, contentId: issueId })
-
-            // 3) Resolver fields por nombre
-            const fields = await github.graphql(`
-              query($projectId:ID!){
-                node(id:$projectId){
-                  ... on ProjectV2 {
-                    fields(first:50){
-                      nodes{
-                        ... on ProjectV2FieldCommon { id name dataType }
-                        ... on ProjectV2SingleSelectField { id name options { id name } }
-                      }
-                    }
-                  }
-                }
-              }`, { projectId })
-            const nodes = fields.node.fields.nodes
-            const find = n => nodes.find(x => x.name === n)
-            const f = {
-              tipo: find(F.tipo),
-              riesgo: find(F.riesgo),
-              impacto: find(F.impacto),
-              plan: find(F.plan),
-              rollback: find(F.rollback),
-              pruebas: find(F.pruebas),
-              aprob: find(F.aprob),
-              vInicio: find(F.vInicio),
-              vFin: find(F.vFin),
+            const toDateOnly = (s) => (s.match(/(\\d{4}-\\d{2}-\\d{2})/)||[])[1] || ''
+            let projectQuery, vars
+            if (ownerType === 'org') {
+              projectQuery = `query($owner:String!, $num:Int!){ organization(login:$owner){ projectV2(number:$num){ id title } } }`
+              vars = { owner: ORG_LOGIN, num: PROJECT_NUMBER }
+            } else {
+              projectQuery = `query($owner:String!, $num:Int!){ user(login:$owner){ projectV2(number:$num){ id title } } }`
+              vars = { owner: USER_LOGIN, num: PROJECT_NUMBER }
             }
-
-            // 4) Obtener Project Item de esta issue
-            const items = await github.graphql(`
-              query($projectId:ID!, $num:Int!){
-                node(id:$projectId){
-                  ... on ProjectV2 {
-                    items(first:50, query:$num){
-                      nodes{ id content{ ... on Issue { number } } }
-                    }
-                  }
-                }
-              }`, { projectId, num: String(issue.number) })
-            const item = items.node.items.nodes.find(n => n.content?.number === issue.number)
-            if (!item) core.setFailed('No se encontró el Project Item para esta issue.')
-
-            // 5) Mutadores
-            const setText = async (fieldId, val) => {
-              if(!fieldId || !val) return
-              await github.graphql(`
-                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
-                  updateProjectV2ItemFieldValue(input:{
-                    projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val }
-                  }){ clientMutationId }
-                }`, { projectId, itemId: item.id, fieldId, val })
+            const projRes = await github.graphql(projectQuery, vars)
+            const projectV2 = ownerType==='org' ? projRes.organization?.projectV2 : projRes.user?.projectV2
+            if (!projectV2?.id) throw new Error('Project v2 no encontrado. Revisa PROJECT_OWNER_TYPE/ORG_LOGIN/USER_LOGIN/PROJECT_NUMBER')
+            const projectId = projectV2.id
+            const issueRes = await github.graphql(
+              `query($owner:String!, $name:String!, $n:Int!){ repository(owner:$owner, name:$name){ issue(number:$n){ id number } } }`,
+              { owner: repo.owner, name: repo.repo, n: issue.number }
+            )
+            const issueId = issueRes.repository.issue.id
+            await github.graphql(
+              `mutation($projectId:ID!, $contentId:ID!){ addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } } }`,
+              { projectId, contentId: issueId }
+            )
+            const fieldsRes = await github.graphql(
+              `query($projectId:ID!){ node(id:$projectId){ ... on ProjectV2 { fields(first:50){ nodes{ ... on ProjectV2FieldCommon { id name dataType } ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }`,
+              { projectId }
+            )
+            const nodes = fieldsRes.node.fields.nodes
+            const findField = (name) => nodes.find(f => f.name === name)
+            const fTipo    = findField(FIELDS.tipo)
+            const fRiesgo  = findField(FIELDS.riesgo)
+            const fImpacto = findField(FIELDS.impacto)
+            const fPlan    = findField(FIELDS.plan)
+            const fRollback= findField(FIELDS.rollback)
+            const fPruebas = findField(FIELDS.pruebas)
+            const fAprob   = findField(FIELDS.aprob)
+            const fVIni    = findField(FIELDS.vInicio)
+            const fVFin    = findField(FIELDS.vFin)
+            const itemsRes = await github.graphql(
+              `query($projectId:ID!, $num:String!){ node(id:$projectId){ ... on ProjectV2 { items(first:50, query:$num){ nodes{ id content{ ... on Issue { number } } } } } } }`,
+              { projectId, num: String(issue.number) }
+            )
+            const item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
+            if (!item) throw new Error('Project Item no encontrado para esta issue')
+            const itemId = item.id
+            const updateText = async (fieldId, value) => {
+              if(!fieldId || !value) return
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId, val: value }
+              )
             }
-            const setDate = async (fieldId, ymd) => {
+            const updateDate = async (fieldId, ymd) => {
               if(!fieldId || !ymd) return
-              await github.graphql(`
-                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
-                  updateProjectV2ItemFieldValue(input:{
-                    projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val }
-                  }){ clientMutationId }
-                }`, { projectId, itemId: item.id, fieldId, val: ymd })
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId, val: ymd }
+              )
             }
-            const setSelect = async (field, optionName) => {
+            const updateSelect = async (field, optionName) => {
               if(!field || !optionName) return
               const opt = (field.options||[]).find(o => o.name.toLowerCase() === optionName.toLowerCase())
               if(!opt) return
-              await github.graphql(`
-                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
-                  updateProjectV2ItemFieldValue(input:{
-                    projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt }
-                  }){ clientMutationId }
-                }`, { projectId, itemId: item.id, fieldId: field.id, opt: opt.id })
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: opt.id }
+              )
             }
-
-            // 6) Aplicar mapeos
-            await setSelect(f.tipo, tipo)
-            await setSelect(f.riesgo, riesgo)
-            await setText(f.impacto?.id, impacto)
-            await setText(f.plan?.id, plan)
-            await setText(f.rollback?.id, rollback)
-            await setText(f.pruebas?.id, pruebas)
-            await setText(f.aprob?.id, aprob)
-            await setDate(f.vInicio?.id, toDate(vinicio))
-            await setDate(f.vFin?.id, toDate(vfin))
-
-  finalize:
-    needs: map-fields
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Post summary
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          issue-number: ${{ github.event.issue.number }}
-          body: |
-            ✅ **RFC sincronizado con Project v2.**
-            - Tipo: procesado
-            - Riesgo: procesado
-            - Ventana: procesada (solo fecha en Project)
-            > Si editas la issue, este flujo volverá a sincronizar los campos.
+            await updateSelect(fTipo,   tipo)
+            await updateSelect(fRiesgo, riesgo)
+            await updateText  (fImpacto?.id, impacto)
+            await updateText  (fPlan?.id,    plan)
+            await updateText  (fRollback?.id,rollback)
+            await updateText  (fPruebas?.id, pruebas)
+            await updateText  (fAprob?.id,   aprob)
+            await updateDate  (fVIni?.id,    toDateOnly(vIniTxt))
+            await updateDate  (fVFin?.id,    toDateOnly(vFinTxt))
