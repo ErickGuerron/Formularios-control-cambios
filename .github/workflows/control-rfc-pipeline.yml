@@ -2,7 +2,7 @@ name: RFC Controller
 
 on:
   issues:
-    types: [opened, edited, labeled]
+    types: [opened, edited, labeled, closed, deleted]
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}
@@ -198,17 +198,17 @@ jobs:
             if (!item) throw new Error('Project Item no encontrado')
             const itemId = item.id
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
-            function selectByName(field, value, extraMap={}) {
-              if(!field || !value) return null
+            function resolveOptionId(field, value, map) {
+              if (!field || !value) return null
               const v = norm(value)
+              const wanted = norm((map||{})[v] || v)
               const opts = field.options || []
-              const mapped = extraMap[v] || v
-              let opt = opts.find(o => norm(o.name) === mapped)
-              if(!opt) opt = opts.find(o => norm(o.name).includes(mapped) || mapped.includes(norm(o.name)))
-              return opt ? opt.id : null
+              let hit = opts.find(o => norm(o.name) === wanted)
+              if (!hit) hit = opts.find(o => norm(o.name).includes(wanted) || wanted.includes(norm(o.name)))
+              return hit ? hit.id : null
             }
-            async function setSelect(field, value, map={}) {
-              const optId = selectByName(field, value, map)
+            async function setSelect(field, value, map) {
+              const optId = resolveOptionId(field, value, map)
               if(!field || !optId) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
@@ -233,7 +233,7 @@ jobs:
               )
             }
             await setSelect(fStatus, 'Todo', { 'todo':'todo' })
-            await setSelect(fTipo,   tipo,   { 'estandar':'estandar', 'estándar':'estandar', 'normal':'normal', 'emergencia':'urgente', 'urgente':'urgente' })
+            await setSelect(fTipo,   tipo,   { 'estandar':'estandar', 'estándar':'estandar', 'normal':'normal', 'emergencia':'emergencia', 'urgente':'emergencia' })
             await setSelect(fRiesgo, riesgo, { 'bajo':'bajo', 'medio':'medio', 'alto':'alto' })
             await setText  (fImpacto?.id, impacto)
             await setText  (fPlan?.id,    plan)
@@ -242,3 +242,99 @@ jobs:
             await setText  (fAprob?.id,   aprob)
             await setDate  (fVIni?.id,    toDateOnly(vIniTxt))
             await setDate  (fVFin?.id,    toDateOnly(vFinTxt))
+
+  set-project-done-on-close:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const ORG_LOGIN = process.env.ORG_LOGIN
+            const USER_LOGIN = process.env.USER_LOGIN
+            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER,10)
+            async function getProjectId(){
+              const org = await github.graphql(
+                `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: ORG_LOGIN }
+              ).catch(()=>null)
+              let hit = org?.organization?.projectsV2?.nodes?.find(n=>n.number===PROJECT_NUMBER)
+              if(hit) return hit.id
+              const user = await github.graphql(
+                `query($login:String!){ user(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: USER_LOGIN }
+              )
+              return user.user.projectsV2.nodes.find(n=>n.number===PROJECT_NUMBER).id
+            }
+            const projectId = await getProjectId()
+            const issueNum = context.payload.issue.number
+            const items = await github.graphql(
+              `query($projectId:ID!, $q:String!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                } }
+              }`, { projectId, q: String(issueNum) }
+            )
+            const item = items.node.items.nodes.find(n=>n.content?.number===issueNum)
+            if(!item) return
+            const fields = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            )
+            const status = fields.node.fields.nodes.find(f=>f.name.toLowerCase()==='status')
+            if(!status) return
+            const optDone = (status.options||[]).find(o=>o.name.toLowerCase()==='done')
+            if(!optDone) return
+            await github.graphql(
+              `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{singleSelectOptionId:$opt}}){ clientMutationId }
+              }`, { projectId, itemId: item.id, fieldId: status.id, opt: optDone.id }
+            )
+
+  remove-project-item-on-delete:
+    if: github.event.action == 'deleted'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const ORG_LOGIN = process.env.ORG_LOGIN
+            const USER_LOGIN = process.env.USER_LOGIN
+            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER,10)
+            async function getProjectId(){
+              const org = await github.graphql(
+                `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: ORG_LOGIN }
+              ).catch(()=>null)
+              let hit = org?.organization?.projectsV2?.nodes?.find(n=>n.number===PROJECT_NUMBER)
+              if(hit) return hit.id
+              const user = await github.graphql(
+                `query($login:String!){ user(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: USER_LOGIN }
+              )
+              return user.user.projectsV2.nodes.find(n=>n.number===PROJECT_NUMBER).id
+            }
+            const projectId = await getProjectId()
+            const issueNum = context.payload.issue.number
+            const items = await github.graphql(
+              `query($projectId:ID!, $q:String!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                } }
+              }`, { projectId, q: String(issueNum) }
+            )
+            const item = items.node.items.nodes.find(n=>n.content?.number===issueNum)
+            if(!item) return
+            await github.graphql(
+              `mutation($projectId:ID!, $itemId:ID!){
+                deleteProjectV2Item(input:{ projectId:$projectId, itemId:$itemId }){ clientMutationId }
+              }`, { projectId, itemId: item.id }
+            )
