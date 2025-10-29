@@ -8,6 +8,7 @@ concurrency:
   group: rfc-${{ github.event.issue.number }}
   cancel-in-progress: true
 
+# Estos permisos solo aplican al GITHUB_TOKEN (el PAT no se limita por esto)
 permissions:
   contents: read
   issues: write
@@ -26,19 +27,29 @@ jobs:
       - name: Ensure labels
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }} 
+          github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
             const issue = context.payload.issue
             const owner = context.repo.owner
             const repo  = context.repo.repo
             const body = issue.body || ''
+
             const grab = (label) => {
-              const re = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([\\s\\S]*?)(?:\\n\\*\\*|$)`, 'i')
-              const m = body.match(re)
-              return m ? m[1].trim() : ''
+              const variants = [
+                new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
+                new RegExp(`^###\\s*${label}\\s*\\n+([\\s\\S]*?)(?:\\n###|$)`, 'im'),
+                new RegExp(`^${label}\\s*:\\s*(.+)$`, 'im')
+              ];
+              for (const re of variants) {
+                const m = body.match(re);
+                if (m) return m[1].trim();
+              }
+              return '';
             }
+
             const tipo   = grab('Tipo de cambio').toLowerCase()
             const riesgo = grab('Riesgo').toLowerCase()
+
             const wanted = new Set(['rfc'])
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
             if (tipo.includes('normal'))                               wanted.add('tipo:normal')
@@ -46,10 +57,12 @@ jobs:
             if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo')
             if (riesgo.includes('medio')) wanted.add('riesgo:medio')
             if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
+
             const current = new Set((issue.labels || []).map(l => l.name))
             const managed = ['rfc','tipo:estandar','tipo:normal','tipo:emergencia','riesgo:bajo','riesgo:medio','riesgo:alto']
             const toAdd = [...wanted].filter(l => !current.has(l))
             const toRemove = [...current].filter(l => managed.includes(l) && !wanted.has(l))
+
             if (toRemove.length) {
               await github.rest.issues.removeLabels({ owner, repo, issue_number: issue.number, labels: toRemove }).catch(()=>{})
             }
@@ -66,7 +79,7 @@ jobs:
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: ${{ env.PROJECT_URL }}
-          github-token: ${{ secrets.PROJECTS_PAT }}  # <— usa tu PAT
+          github-token: ${{ secrets.PROJECTS_PAT }}
 
   map-fields:
     needs: labels
@@ -75,7 +88,7 @@ jobs:
       - name: Map Issue Form → Project fields
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }}  # <— usa tu PAT
+          github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
@@ -124,22 +137,33 @@ jobs:
             const body = issue.body || ''
 
             const grab = (label) => {
-              const re = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([\\s\\S]*?)(?:\\n\\*\\*|$)`, 'i')
-              const m = body.match(re)
-              return m ? m[1].trim() : ''
+              const variants = [
+                new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
+                new RegExp(`^###\\s*${label}\\s*\\n+([\\s\\S]*?)(?:\\n###|$)`, 'im'),
+                new RegExp(`^${label}\\s*:\\s*(.+)$`, 'im')
+              ];
+              for (const re of variants) {
+                const m = body.match(re);
+                if (m) return m[1].trim();
+              }
+              return '';
             }
+
             const toDateOnly = (s) => (s.match(/(\\d{4}-\\d{2}-\\d{2})/)||[])[1] || ''
 
-            const tipo     = grab('Tipo de cambio')
-            const riesgo   = grab('Riesgo')
-            const impacto  = grab('Impacto')
-            const plan     = grab('Plan de implementación')
-            const rollback = grab('Plan de reversa \\(rollback\\)')
-            const pruebas  = grab('Plan de pruebas')
-            const vIniTxt  = grab('Ventana \\(inicio\\)')
-            const vFinTxt  = grab('Ventana \\(fin\\)')
-            const aprob    = grab('Aprobadores requeridos')
+            const tipo     = grab('Tipo de cambio') || grab('Change Type')
+            const riesgo   = grab('Riesgo') || grab('Risk')
+            const impacto  = grab('Impacto') || grab('Impact')
+            const plan     = grab('Plan de implementación') || grab('Implementation Plan')
+            const rollback = grab('Plan de reversa \\(rollback\\)') || grab('Rollback Plan')
+            const pruebas  = grab('Plan de pruebas') || grab('Test Plan')
+            const vIniTxt  = grab('Ventana \\(inicio\\)') || grab('Window \\(start\\)') || grab('Window – Start') || grab('Window - Start')
+            const vFinTxt  = grab('Ventana \\(fin\\)')    || grab('Window \\(end\\)')   || grab('Window – End')   || grab('Window - End')
+            const aprob    = grab('Aprobadores requeridos') || grab('Required Approvers')
 
+            console.log('Valores extraídos:', { tipo, riesgo, impacto, plan, rollback, pruebas, vIniTxt, vFinTxt, aprob })
+
+            // Obtener issueId
             const issueRes = await github.graphql(
               `query($owner:String!, $name:String!, $n:Int!){
                 repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
@@ -147,12 +171,14 @@ jobs:
             )
             const issueId = issueRes.repository.issue.id
 
+            // Asegurar item en el Project
             await github.graphql(
               `mutation($projectId:ID!, $contentId:ID!){
                 addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
               }`, { projectId, contentId: issueId }
             )
 
+            // Leer campos del Project
             const fieldsRes = await github.graphql(
               `query($projectId:ID!){
                 node(id:$projectId){
@@ -167,20 +193,23 @@ jobs:
                 }
               }`, { projectId }
             )
-            const nodes = fieldsRes.node.fields.nodes
-            const byName = n => nodes.find(f => f.name === n)
+            const fields = fieldsRes.node.fields.nodes
+            const byAnyName = (names) => names
+              .map(n => fields.find(f => f?.name?.toLowerCase() === n.toLowerCase()))
+              .find(Boolean)
 
-            // OJO: tus columnas del tablero están en inglés según la captura.
-            const fTipo    = byName('Change Type')            // antes 'Tipo de cambio'
-            const fRiesgo  = byName('Risk')                   // antes 'Riesgo'
-            const fImpacto = byName('Impact')                 // antes 'Impacto'
-            const fPlan    = byName('Implementation Plan')    // antes 'Plan de implementación'
-            const fRollback= byName('Rollback Plan')          // si tienes otra etiqueta, ajusta aquí
-            const fPruebas = byName('Test Plan')
-            const fAprob   = byName('Required Approvers')
-            const fVIni    = byName('Window – Start')
-            const fVFin    = byName('Window – End')
+            // Alias ES/EN de tus columnas
+            const fTipo     = byAnyName(['Change Type','Tipo de cambio'])
+            const fRiesgo   = byAnyName(['Risk','Riesgo'])
+            const fImpacto  = byAnyName(['Impact','Impacto'])
+            const fPlan     = byAnyName(['Implementation Plan','Plan de implementación'])
+            const fRollback = byAnyName(['Rollback Plan','Plan de reversa (rollback)'])
+            const fPruebas  = byAnyName(['Test Plan','Plan de pruebas'])
+            const fAprob    = byAnyName(['Required Approvers','Aprobadores requeridos'])
+            const fVIni     = byAnyName(['Window – Start','Ventana – Inicio','Window - Start'])
+            const fVFin     = byAnyName(['Window – End','Ventana – Fin','Window - End'])
 
+            // Buscar el item del issue
             const itemsRes = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){
@@ -196,6 +225,7 @@ jobs:
             if (!item) throw new Error('Project Item no encontrado')
             const itemId = item.id
 
+            // Helpers de escritura
             async function setText(fieldId, val){
               if(!fieldId || !val) return
               await github.graphql(
@@ -204,6 +234,7 @@ jobs:
                 }`, { projectId, itemId, fieldId, val }
               )
             }
+
             async function setDate(fieldId, ymd){
               if(!fieldId || !ymd) return
               await github.graphql(
@@ -212,10 +243,31 @@ jobs:
                 }`, { projectId, itemId, fieldId, val: ymd }
               )
             }
+
+            const mapOption = (fieldName, value) => {
+              if (!value) return value;
+              const v = value.trim().toLowerCase();
+              if (/change type|tipo de cambio/i.test(fieldName)) {
+                if (['estándar','estandar','standard'].includes(v)) return 'Standard';
+                if (['normal','routine'].includes(v)) return 'Normal';
+                if (['emergencia','emergency'].includes(v)) return 'Emergency';
+              }
+              if (/risk|riesgo/i.test(fieldName)) {
+                if (['bajo','low'].includes(v)) return 'Low';
+                if (['medio','medium','moderate'].includes(v)) return 'Medium';
+                if (['alto','high'].includes(v)) return 'High';
+              }
+              return value;
+            }
+
             async function setSelect(field, optionName){
               if(!field || !optionName) return
-              const opt = (field.options||[]).find(o => o.name.toLowerCase() === optionName.toLowerCase())
-              if(!opt) return
+              const wanted = mapOption(field.name, optionName)
+              const opt = (field.options||[]).find(o => o.name.toLowerCase() === String(wanted).toLowerCase())
+              if(!opt) {
+                console.log(`⚠️ Opción no encontrada para ${field.name}: "${optionName}" (normalizada: "${wanted}")`)
+                return
+              }
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
@@ -223,6 +275,7 @@ jobs:
               )
             }
 
+            // Aplicar valores
             await setSelect(fTipo,   tipo)
             await setSelect(fRiesgo, riesgo)
             await setText  (fImpacto?.id, impacto)
