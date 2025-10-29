@@ -4,18 +4,11 @@ title: "[RFC] <título breve del cambio>"
 labels: ["rfc", "change-request"]
 assignees: []
 body:
-  - type: input
-    id: solicitante
-    attributes:
-      label: Solicitante
-      description: Nombre y área de quien solicita.
-      placeholder: "Nombre Apellido - Área"
-    validations: { required: true }
-
   - type: dropdown
     id: tipo_cambio
     attributes:
       label: Tipo de cambio
+      description: Define el nivel de control (estándar va más rápido; emergencia acelera con salvaguardas).
       options: ["Estándar", "Normal", "Emergencia"]
     validations: { required: true }
 
@@ -23,6 +16,7 @@ body:
     id: riesgo
     attributes:
       label: Riesgo
+      description: Mide probabilidad/severidad para decidir controles.
       options: ["Bajo", "Medio", "Alto"]
     validations: { required: true }
 
@@ -30,53 +24,54 @@ body:
     id: impacto
     attributes:
       label: Impacto
-      description: "Usuarios/sistemas afectados y downtime estimado."
-      placeholder: "Ej.: Afecta API pagos y web pública. Downtime 20 min."
+      description: ¿Quién/qué se afecta? ¿Habrá downtime? Sé concreto.
+      placeholder: "Afecta API pagos y checkout web. Downtime estimado: 20 min en ventana."
     validations: { required: true }
 
   - type: textarea
     id: plan
     attributes:
       label: Plan de implementación
-      description: "Pasos claros y ordenados."
-      placeholder: "1) Respaldar BD\n2) Desplegar versión X\n3) Verificar healthchecks"
+      description: Pasos claros y ordenados (numerados).
+      placeholder: "1) Respaldar BD\n2) Desplegar versión X\n3) Ejecutar migraciones\n4) Verificar healthchecks"
     validations: { required: true }
 
   - type: textarea
     id: rollback
     attributes:
       label: Plan de reversa (rollback)
-      description: "Cómo volver al estado previo si algo falla."
-      placeholder: "Restaurar snapshot de BD y revertir despliegue a versión anterior."
+      description: ¿Cómo vuelves atrás si algo falla?
+      placeholder: "Revertir a versión anterior y restaurar snapshot BD de las 19:45."
     validations: { required: true }
 
   - type: textarea
     id: pruebas
     attributes:
       label: Plan de pruebas
-      description: "Antes y después; criterios de aceptación."
-      placeholder: "Smoke tests, checkout de compra, métricas 2xx/5xx estables."
+      description: Cómo verificas antes y después; criterios de aceptación.
+      placeholder: "Smoke tests + flujo de compra; tasa 2xx estable; métricas sin regresiones."
     validations: { required: true }
 
   - type: input
-    id: ventana
+    id: ventana_inicio
     attributes:
-      label: Ventana del cambio
-      description: "Inicio–Fin con zona horaria."
-      placeholder: "2025-11-02 20:00–22:00 America/Guayaquil"
+      label: Ventana (inicio)
+      description: "Fecha/hora con zona (ISO o claro). Ej.: 2025-11-02 20:00 America/Guayaquil"
+      placeholder: "2025-11-02 20:00 America/Guayaquil"
+    validations: { required: true }
+
+  - type: input
+    id: ventana_fin
+    attributes:
+      label: Ventana (fin)
+      description: "Fecha/hora con zona (ISO o claro). Ej.: 2025-11-02 22:00 America/Guayaquil"
+      placeholder: "2025-11-02 22:00 America/Guayaquil"
     validations: { required: true }
 
   - type: input
     id: aprobadores
     attributes:
       label: Aprobadores requeridos
-      description: "Correos o @handles de dueños de servicio / seguridad / CAB."
+      description: Correos o @handles (dueño de servicio, seguridad, CAB).
       placeholder: "dueño-servicio@empresa.com; seguridad@empresa.com"
     validations: { required: true }
-
-  - type: input
-    id: dependencias
-    attributes:
-      label: Dependencias
-      description: "Servicios/CI/IDs relacionados (opcional)."
-      placeholder: "api-pagos, db-clientes"

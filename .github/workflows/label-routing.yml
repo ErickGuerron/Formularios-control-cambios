@@ -1,18 +1,77 @@
-name: Label RFC
+# .github/workflows/label-routing.yml
+name: Label Routing (RFC)
+
 on:
   issues:
     types: [opened, edited]
+
+concurrency:
+  group: label-routing-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  issues: write
+  contents: read
+
 jobs:
-  label:
-    if: contains(github.event.issue.labels.*.name, 'rfc')
+  route:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
     steps:
-      - name: Add labels (example)
-        uses: actions-ecosystem/action-add-labels@v1
+      - name: Sync labels from RFC form
+        uses: actions/github-script@v7
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          labels: |
-            change-request
-            rfc
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue
+            const owner = context.repo.owner
+            const repo  = context.repo.repo
+
+            // Helper: extrae bloques del Issue Form (markdown con títulos en **negrita**)
+            const body = issue.body || ''
+            const grab = (label) => {
+              const re = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([\\s\\S]*?)(?:\\n\\*\\*|$)`, 'i')
+              const m = body.match(re)
+              return m ? m[1].trim() : ''
+            }
+
+            // Lee campos clave del form
+            const tipo   = grab('Tipo de cambio').toLowerCase()  // "Estándar", "Normal", "Emergencia"
+            const riesgo = grab('Riesgo').toLowerCase()           // "Bajo", "Medio", "Alto"
+
+            // Etiquetas objetivo (normalizadas)
+            const wanted = new Set(['rfc']) // fuerza rfc para auto-add o filtros
+            if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
+            if (tipo.includes('normal'))                               wanted.add('tipo:normal')
+            if (tipo.includes('emergencia'))                           wanted.add('tipo:emergencia')
+
+            if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo')
+            if (riesgo.includes('medio')) wanted.add('riesgo:medio')
+            if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
+
+            // Trae etiquetas actuales
+            const current = new Set((issue.labels || []).map(l => l.name))
+
+            // Calcula add/remove para mantener sincronizado
+            const prefixWhitelist = ['rfc','tipo:estandar','tipo:normal','tipo:emergencia','riesgo:bajo','riesgo:medio','riesgo:alto']
+            const toAdd = [...wanted].filter(l => !current.has(l))
+            const toRemove = [...current].filter(l => prefixWhitelist.includes(l) && !wanted.has(l))
+
+            // Aplica cambios (quita primero para evitar duplicidades)
+            if (toRemove.length) {
+              await github.rest.issues.removeLabels({
+                owner, repo, issue_number: issue.number, labels: toRemove
+              }).catch(()=>{}) // si alguna no estaba, ignorar
+            }
+            if (toAdd.length) {
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: issue.number, labels: toAdd
+              })
+            }
+
+            // Opcional: comentar un resumen
+            const summary = [
+              '🔖 **Label routing** sincronizado:',
+              toAdd.length   ? `+ Añadidas: ${toAdd.join(', ')}` : '+ Añadidas: —',
+              toRemove.length? `- Quitadas: ${toRemove.join(', ')}`: '- Quitadas: —'
+            ].join('\n')
+            await github.rest.issues.createComment({ owner, repo, issue_number: issue.number, body: summary })

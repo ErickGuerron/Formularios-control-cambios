@@ -9,97 +9,174 @@ jobs:
     permissions:
       issues: write
       repository-projects: write
+      contents: read
     steps:
       - name: Map fields with GraphQL
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const issue = context.payload.issue
-            const body = issue.body || ""
+            // === CONFIGURACIÓN: AJUSTA SOLO ESTO ===
+            const ORG_LOGIN = 'TU_ORG'            // org o user owner del Project
+            const PROJECT_NUMBER = 1              // número del Project (el que ves en la URL)
+            const FIELD_NAMES = {
+              tipo:       'Tipo de cambio',       // Single-select
+              riesgo:     'Riesgo',               // Single-select
+              impacto:    'Impacto',              // Text
+              plan:       'Plan de implementación', // Text
+              rollback:   'Plan de reversa (rollback)', // Text
+              pruebas:    'Plan de pruebas',      // Text
+              aprob:      'Aprobadores requeridos', // Text
+              vInicio:    'Ventana – Inicio',     // Date (solo fecha)
+              vFin:       'Ventana – Fin',        // Date (solo fecha)
+            }
+            // === FIN CONFIGURACIÓN ===
 
-            const get = (label) => {
-              const r = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([^\\n]+)`, 'i')
-              const m = body.match(r)
-              return m ? m[1].trim() : ""
+            const issue = context.payload.issue
+            const repo = context.repo
+            const body = issue.body || ''
+
+            // Helpers de parseo (Issue Forms renderiza como markdown con títulos en **negrita**)
+            function grab(label) {
+              const re = new RegExp(`\\*\\*${label}\\*\\*\\s*\\n?([\\s\\S]*?)(?:\\n\\*\\*|$)`, 'i')
+              const m = body.match(re)
+              return m ? m[1].trim() : ''
+            }
+            const tipo      = grab('Tipo de cambio')
+            const riesgo    = grab('Riesgo')
+            const impacto   = grab('Impacto')
+            const plan      = grab('Plan de implementación')
+            const rollback  = grab('Plan de reversa \\(rollback\\)')
+            const pruebas   = grab('Plan de pruebas')
+            const vIniText  = grab('Ventana \\(inicio\\)')
+            const vFinText  = grab('Ventana \\(fin\\)')
+            const aprob     = grab('Aprobadores requeridos')
+
+            // Extrae fecha (YYYY-MM-DD) de un texto con fecha/hora/tz
+            const toDateOnly = (s) => {
+              const m = s.match(/(\\d{4}-\\d{2}-\\d{2})/)
+              return m ? m[1] : ''
             }
 
-            const tipo = get("Tipo de cambio")
-            const riesgo = get("Riesgo")
-            const ventana = get("Ventana del cambio") // "YYYY-MM-DD HH:mm–HH:mm TZ" (parsea si necesitas inicio/fin por separado)
-            const impacto = get("Impacto")
-            const plan = get("Plan de implementación")
-            const rollback = get("Plan de reversa (rollback)")
-            const pruebas = get("Plan de pruebas")
-            const aprobadores = get("Aprobadores requeridos")
-
-            const projectNumber = 1
-            const org = 'TU_ORG'
-            // Busca el project nodeId
-            const projectRes = await github.graphql(`
+            // 1) Obtener ProjectV2.id por número
+            const projRes = await github.graphql(`
               query($org:String!, $number:Int!) {
                 organization(login:$org){
-                  projectV2(number:$number){ id }
+                  projectV2(number:$number){ id title }
                 }
-              }`, { org, number: projectNumber })
-            const projectId = projectRes.organization.projectV2.id
+              }`, { org: ORG_LOGIN, number: PROJECT_NUMBER })
+            const projectId = projRes.organization.projectV2.id
 
-            // Obtén el item del project a partir de la issue:
-            // Si usaste add-to-project, ya existe; si no, puedes crearlo o buscarlo
-            // Aquí ejemplo de búsqueda rápida:
-            const itemRes = await github.graphql(`
-              query($projectId:ID!, $q:String!) {
-                search(type: ISSUE, query: $q, first: 1) {
-                  nodes {
-                    ... on Issue {
-                      id
-                      projectItems(first:20) {
-                        nodes { id project { id } }
+            // 2) Obtener el item del Project para esta issue; si no está, añadirlo
+            // Busca la issue nodeId:
+            const issueRes = await github.graphql(`
+              query($owner:String!, $name:String!, $number:Int!) {
+                repository(owner:$owner, name:$name){
+                  issue(number:$number){ id }
+                }
+              }`, { owner: repo.owner, name: repo.repo, number: issue.number })
+            const issueId = issueRes.repository.issue.id
+
+            // Añadir item si aún no existe
+            await github.graphql(`
+              mutation($projectId:ID!, $contentId:ID!){
+                addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}) {
+                  item { id }
+                }
+              }`, { projectId, contentId: issueId })
+
+            // 3) Obtener fields del Project y armar un índice por nombre
+            const fieldsRes = await github.graphql(`
+              query($projectId:ID!) {
+                node(id:$projectId){
+                  ... on ProjectV2 {
+                    fields(first:50){
+                      nodes{
+                        ... on ProjectV2FieldCommon { id name dataType }
+                        ... on ProjectV2SingleSelectField {
+                          id name dataType
+                          options { id name }
+                        }
                       }
                     }
                   }
                 }
-              }`, { projectId, q: `repo:${context.repo.owner}/${context.repo.repo} is:issue number:${issue.number}` })
+              }`, { projectId })
+            const fieldNodes = fieldsRes.node.fields.nodes
+            const findField = (name) => fieldNodes.find(f => f.name === name)
 
-            const issueNode = itemRes.search.nodes[0]
+            const fTipo    = findField(FIELD_NAMES.tipo)
+            const fRiesgo  = findField(FIELD_NAMES.riesgo)
+            const fImpacto = findField(FIELD_NAMES.impacto)
+            const fPlan    = findField(FIELD_NAMES.plan)
+            const fRollback= findField(FIELD_NAMES.rollback)
+            const fPruebas = findField(FIELD_NAMES.pruebas)
+            const fAprob   = findField(FIELD_NAMES.aprob)
+            const fVIni    = findField(FIELD_NAMES.vInicio)
+            const fVFin    = findField(FIELD_NAMES.vFin)
 
-            const fields = {
-              tipo: { id: 'FIELD_ID_TIPO', kind:'singleSelect', optionMap: { 'Estándar':'OPTION_ID_STD', 'Normal':'OPTION_ID_NOR', 'Emergencia':'OPTION_ID_EME' } },
-              riesgo: { id: 'FIELD_ID_RIESGO', kind:'singleSelect', optionMap: { 'Bajo':'OPT_LOW', 'Medio':'OPT_MED', 'Alto':'OPT_HIGH' } },
-              impacto: { id: 'FIELD_ID_IMPACTO', kind:'text' },
-              plan: { id: 'FIELD_ID_PLAN', kind:'text' },
-              rollback: { id: 'FIELD_ID_ROLLBACK', kind:'text' },
-              pruebas: { id: 'FIELD_ID_PRUEBAS', kind:'text' },
-              aprobadores: { id: 'FIELD_ID_APROB', kind:'text' },
-              // ventana: si separas Inicio/Fin, crea dos campos Date distintos
+            // 4) Resolver el item recién añadido (Project Item ID)
+            const itemsRes = await github.graphql(`
+              query($projectId:ID!, $issueId:ID!) {
+                node(id:$projectId){
+                  ... on ProjectV2 {
+                    items(first:50, query:"${issue.number}"){
+                      nodes{
+                        id
+                        content { ... on Issue { id number } }
+                      }
+                    }
+                  }
+                }
+              }`, { projectId, issueId })
+            const item = itemsRes.node.items.nodes.find(n => n.content && n.content.number === issue.number)
+            if (!item) {
+              core.setFailed('No se encontró el Project Item para esta issue.')
+              return
             }
+            const itemId = item.id
 
-            const updateText = async (fieldId, value) => {
-              if(!value) return
+            // 5) Mutadores genéricos
+            async function setText(fieldId, value) {
+              if (!fieldId || !value) return
               await github.graphql(`
-                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $value:String!) {
+                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
                   updateProjectV2ItemFieldValue(input:{
                     projectId:$projectId, itemId:$itemId, fieldId:$fieldId,
-                    value:{ text:$value }
-                  }){ clientMutationId }
-                }`, { projectId, itemId: issueNode.projectItems.nodes[0].id, fieldId, value })
+                    value:{ text:$val }
+                  }) { clientMutationId }
+                }`, { projectId, itemId, fieldId, val: value })
             }
-
-            const updateSelect = async (fieldId, optionId) => {
-              if(!optionId) return
+            async function setDate(fieldId, ymd) {
+              if (!fieldId || !ymd) return
               await github.graphql(`
-                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt: String!) {
+                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
+                  updateProjectV2ItemFieldValue(input:{
+                    projectId:$projectId, itemId:$itemId, fieldId:$fieldId,
+                    value:{ date:$val }
+                  }) { clientMutationId }
+                }`, { projectId, itemId, fieldId, val: ymd })
+            }
+            async function setSelect(field, optionName) {
+              if (!field || !optionName) return
+              const opt = (field.options || []).find(o => o.name.toLowerCase() === optionName.toLowerCase())
+              if (!opt) return
+              await github.graphql(`
+                mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{
                     projectId:$projectId, itemId:$itemId, fieldId:$fieldId,
                     value:{ singleSelectOptionId:$opt }
-                  }){ clientMutationId }
-                }`, { projectId, itemId: issueNode.projectItems.nodes[0].id, fieldId, opt: optionId })
+                  }) { clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: opt.id })
             }
 
-            await updateSelect(fields.tipo.id, fields.tipo.optionMap[tipo])
-            await updateSelect(fields.riesgo.id, fields.riesgo.optionMap[riesgo])
-            await updateText(fields.impacto.id, impacto)
-            await updateText(fields.plan.id, plan)
-            await updateText(fields.rollback.id, rollback)
-            await updateText(fields.pruebas.id, pruebas)
-            await updateText(fields.aprobadores.id, aprobadores)
+            // 6) Aplicar mapeos
+            await setSelect(fTipo,   tipo)
+            await setSelect(fRiesgo, riesgo)
+            await setText  (fImpacto?.id, impacto)
+            await setText  (fPlan?.id,    plan)
+            await setText  (fRollback?.id,rollback)
+            await setText  (fPruebas?.id, pruebas)
+            await setText  (fAprob?.id,   aprob)
+            await setDate  (fVIni?.id, toDateOnly(vIniText))
+            await setDate  (fVFin?.id, toDateOnly(vFinText))
