@@ -49,7 +49,7 @@ jobs:
             const wanted = new Set(['rfc'])
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
             if (tipo.includes('normal'))                               wanted.add('tipo:normal')
-            if (tipo.includes('emergencia'))                           wanted.add('tipo:emergencia')
+            if (tipo.includes('emergencia') || tipo.includes('urgente')) wanted.add('tipo:emergencia')
             if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo')
             if (riesgo.includes('medio')) wanted.add('riesgo:medio')
             if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
@@ -88,7 +88,6 @@ jobs:
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
             const PROJECT_TITLE = process.env.PROJECT_TITLE
-
             async function findProjectV2() {
               const tryOrg = await github.graphql(
                 `query($login:String!){
@@ -118,14 +117,11 @@ jobs:
               }
               throw new Error('Project v2 no encontrado')
             }
-
             const project = await findProjectV2()
             const projectId = project.id
-
             const issue = context.payload.issue
             const repo = context.repo
             const body = issue.body || ''
-
             const grab = (label) => {
               const variants = [
                 new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
@@ -138,9 +134,7 @@ jobs:
               }
               return '';
             }
-
             const toDateOnly = (s) => (s && (s.match(/(\d{4}-\d{2}-\d{2})/)||[])[1]) || ''
-
             const tipo     = grab('Tipo de cambio') || grab('Change Type')
             const riesgo   = grab('Riesgo') || grab('Risk')
             const impacto  = grab('Impacto') || grab('Impact')
@@ -150,20 +144,17 @@ jobs:
             const vIniTxt  = grab('Ventana \\(inicio\\)') || grab('Init') || grab('Window – Start') || grab('Window - Start')
             const vFinTxt  = grab('Ventana \\(fin\\)')    || grab('Completion') || grab('Window – End') || grab('Window - End')
             const aprob    = grab('Aprobadores requeridos') || grab('Approvers') || grab('Required Approvers')
-
             const issueRes = await github.graphql(
               `query($owner:String!, $name:String!, $n:Int!){
                 repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
               }`, { owner: repo.owner, name: repo.repo, n: issue.number }
             )
             const issueId = issueRes.repository.issue.id
-
             await github.graphql(
               `mutation($projectId:ID!, $contentId:ID!){
                 addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
               }`, { projectId, contentId: issueId }
             )
-
             const fieldsRes = await github.graphql(
               `query($projectId:ID!){
                 node(id:$projectId){
@@ -182,7 +173,7 @@ jobs:
             const byAnyName = (names) => names
               .map(n => fields.find(f => f?.name?.toLowerCase() === n.toLowerCase()))
               .find(Boolean)
-
+            const fStatus  = byAnyName(['Status','Estado'])
             const fTipo     = byAnyName(['Change Type','Tipo de cambio'])
             const fRiesgo   = byAnyName(['Risk','Riesgo'])
             const fImpacto  = byAnyName(['Impact','Impacto'])
@@ -192,7 +183,6 @@ jobs:
             const fVIni     = byAnyName(['Init','Window – Start','Ventana – Inicio','Window - Start'])
             const fVFin     = byAnyName(['Completion','Window – End','Ventana – Fin','Window - End'])
             const fAprob    = byAnyName(['Approvers','Required Approvers','Aprobadores requeridos'])
-
             const itemsRes = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){
@@ -207,47 +197,25 @@ jobs:
             const item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
             if (!item) throw new Error('Project Item no encontrado')
             const itemId = item.id
-
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
-
-            function candidateTokens(fieldName, value){
+            function selectByName(field, value, extraMap={}) {
+              if(!field || !value) return null
               const v = norm(value)
-              const tokens = new Set([v])
-              if (/change type|tipo de cambio/i.test(fieldName)) {
-                if (v.includes('estandar') || v.includes('estándar') || v.includes('standard') || v === 'std') {
-                  tokens.add('estandar'); tokens.add('standard')
-                }
-                if (v.includes('normal') || v.includes('routine') || v.includes('rutina')) {
-                  tokens.add('normal')
-                }
-                if (v.includes('emergencia') || v.includes('emergency')) {
-                  tokens.add('emergency'); tokens.add('emergencia')
-                }
-              }
-              if (/risk|riesgo/i.test(fieldName)) {
-                if (v.includes('bajo') || v.includes('low')) { tokens.add('low'); tokens.add('bajo') }
-                if (v.includes('medio') || v.includes('medium') || v.includes('moderate') || v.includes('moderado')) {
-                  tokens.add('medium'); tokens.add('medio'); tokens.add('moderate')
-                }
-                if (v.includes('alto') || v.includes('high')) { tokens.add('high'); tokens.add('alto') }
-              }
-              return [...tokens]
-            }
-
-            async function setSelect(field, optionName){
-              if(!field || !optionName) return
               const opts = field.options || []
-              const cands = candidateTokens(field.name, optionName)
-              let opt = opts.find(o => cands.includes(norm(o.name)))
-              if(!opt) opt = opts.find(o => cands.some(t => norm(o.name).includes(t) || t.includes(norm(o.name))))
-              if(!opt) return
+              const mapped = extraMap[v] || v
+              let opt = opts.find(o => norm(o.name) === mapped)
+              if(!opt) opt = opts.find(o => norm(o.name).includes(mapped) || mapped.includes(norm(o.name)))
+              return opt ? opt.id : null
+            }
+            async function setSelect(field, value, map={}) {
+              const optId = selectByName(field, value, map)
+              if(!field || !optId) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
-                }`, { projectId, itemId, fieldId: field.id, opt: opt.id }
+                }`, { projectId, itemId, fieldId: field.id, opt: optId }
               )
             }
-
             async function setText(fieldId, val){
               if(!fieldId || !val) return
               await github.graphql(
@@ -256,7 +224,6 @@ jobs:
                 }`, { projectId, itemId, fieldId, val }
               )
             }
-
             async function setDate(fieldId, ymd){
               if(!fieldId || !ymd) return
               await github.graphql(
@@ -265,9 +232,9 @@ jobs:
                 }`, { projectId, itemId, fieldId, val: ymd }
               )
             }
-
-            await setSelect(fTipo,   tipo)
-            await setSelect(fRiesgo, riesgo)
+            await setSelect(fStatus, 'Todo', { 'todo':'todo' })
+            await setSelect(fTipo,   tipo,   { 'estandar':'estandar', 'estándar':'estandar', 'normal':'normal', 'emergencia':'urgente', 'urgente':'urgente' })
+            await setSelect(fRiesgo, riesgo, { 'bajo':'bajo', 'medio':'medio', 'alto':'alto' })
             await setText  (fImpacto?.id, impacto)
             await setText  (fPlan?.id,    plan)
             await setText  (fRollback?.id,rollback)
