@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
+  PROJECT_URL: https://github.com/ErickGuerron/Formularios-control-cambios.git
   ORG_LOGIN: MyCSW
   USER_LOGIN: ErickGuerron
   PROJECT_NUMBER: 1
