@@ -1,0 +1,102 @@
+# =========================
+# Node / Package managers
+# =========================
+node_modules/
+.pnpm-debug.log
+yarn.lock
+package-lock.json
+pnpm-lock.yaml
+
+# =========================
+# Build / Output
+# =========================
+dist/
+build/
+.tmp/
+.temp/
+.cache/
+.ncc/
+.ncc-cache/
+
+# =========================
+# Tests / Coverage
+# =========================
+coverage/
+.nyc_output/
+jest-html-reporters-*.html
+jest-*.xml
+
+# =========================
+# TypeScript
+# =========================
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# =========================
+# Env files
+# =========================
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# =========================
+# Editor / IDE
+# =========================
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# =========================
+# OS junk
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Lint / Tooling caches
+# =========================
+.eslintcache
+.stylelintcache
+.turbo/
+.prettier-cache/
+
+# =========================
+# TypeORM specifics
+# =========================
+# Caché de consultas de TypeORM
+.typeorm-cache/
+typeorm-cache/
+
+# DBs locales (si usas SQLite/SQL.js para dev/testing)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Dumps locales (opcional: comenta si quieres versionarlos)
+dump.sql
+*.dump.sql
+
+# Archivos de config locales (mantén tu config "normal" versionada si no tiene secretos)
+ormconfig.local.json
+ormconfig.local.js
+ormconfig.local.ts
+data-source.local.ts
+data-source.local.js
