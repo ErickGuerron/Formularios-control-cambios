@@ -4,6 +4,15 @@ title: "[RFC] <título breve del cambio>"
 labels: ["rfc", "change-request"]
 assignees: []
 body:
+  - type: textarea
+    id: solicitante
+    attributes:
+      label: Solicitante
+      description: Id del solicitante
+      placeholder: "1"
+    validations:
+      required: true
+
   - type: dropdown
     id: tipo_cambio
     attributes:

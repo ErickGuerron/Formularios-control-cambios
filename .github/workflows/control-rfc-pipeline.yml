@@ -144,6 +144,7 @@ jobs:
             const vIniTxt  = grab('Ventana \\(inicio\\)') || grab('Init') || grab('Window – Start') || grab('Window - Start')
             const vFinTxt  = grab('Ventana \\(fin\\)')    || grab('Completion') || grab('Window – End') || grab('Window - End')
             const aprob    = grab('Aprobadores requeridos') || grab('Approvers') || grab('Required Approvers')
+            const solicitante = grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester')
             const issueRes = await github.graphql(
               `query($owner:String!, $name:String!, $n:Int!){
                 repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
@@ -183,6 +184,7 @@ jobs:
             const fVIni     = byAnyName(['Init','Window – Start','Ventana – Inicio','Window - Start'])
             const fVFin     = byAnyName(['Completion','Window – End','Ventana – Fin','Window - End'])
             const fAprob    = byAnyName(['Approvers','Required Approvers','Aprobadores requeridos'])
+            const fSolic    = byAnyName(['Solicitante','Solicitor','Applicant','Requester'])
             const itemsRes = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){
@@ -242,6 +244,7 @@ jobs:
             await setText  (fAprob?.id,   aprob)
             await setDate  (fVIni?.id,    toDateOnly(vIniTxt))
             await setDate  (fVFin?.id,    toDateOnly(vFinTxt))
+            await setText  (fSolic?.id,   solicitante)
 
   set-project-done-on-close:
     if: github.event.action == 'closed'
