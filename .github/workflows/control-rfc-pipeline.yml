@@ -2,7 +2,6 @@ name: RFC Controller
 
 on:
   issues:
-    # Disparadores para todos los jobs
     types: [opened, edited, closed, deleted]
 
 concurrency:
@@ -12,7 +11,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  projects: write # <-- Permiso correcto
+  projects: write
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -36,7 +35,6 @@ jobs:
             const repo  = context.repo.repo
             const body = issue.body || ''
             
-            // --- 1. Lógica de 'labels' ---
             const grab = (label) => {
               const variants = [
                 new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
@@ -75,7 +73,6 @@ jobs:
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: toAdd })
             }
 
-            // --- 2. Lógica de 'map-fields' ---
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
@@ -131,9 +128,6 @@ jobs:
             )
             const issueId = issueRes.repository.issue.id
 
-            // --- INICIO DE LA CORRECCIÓN DE RACE CONDITION ---
-            
-            // 1. Buscamos si el item ya existe
             const itemsSearchRes = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){
@@ -148,10 +142,8 @@ jobs:
             let item = itemsSearchRes.node.items.nodes.find(n => n.content?.number === issue.number)
             let itemId;
 
-            // 2. Si NO existe (evento 'opened')
             if (!item) {
               console.log(`Issue ${issue.number} no encontrado en el proyecto. Añadiendo...`);
-              // LO CREAMOS y capturamos la respuesta en 'addRes'
               const addRes = await github.graphql(
                 `mutation($projectId:ID!, $contentId:ID!){
                   addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ 
@@ -159,10 +151,8 @@ jobs:
                   }
                 }`, { projectId, contentId: issueId }
               );
-              // Usamos el ID de la RESPUESTA, no de una búsqueda
               itemId = addRes.addProjectV2ItemById.item.id;
             } else {
-            // 3. Si SÍ existe (evento 'edited')
               console.log(`Issue ${issue.number} ya existe en el proyecto. Actualizando...`);
               itemId = item.id;
             }
@@ -170,7 +160,6 @@ jobs:
             if (!itemId) {
               throw new Error('No se pudo obtener el itemId del proyecto.');
             }
-            // --- FIN DE LA CORRECCIÓN ---
 
             const fieldsRes = await github.graphql(
               `query($projectId:ID!){
@@ -241,7 +230,12 @@ jobs:
             }
             
             if (context.payload.action === 'opened') {
-              await setSelect(fStatus, 'Todo', { 'todo':'todo' });
+              const notPlannedOpt = (fStatus.options||[]).find(o=>norm(o.name)==='not planned' || norm(o.name)==='no planeado')
+              if (notPlannedOpt) {
+                await setSelect(fStatus, 'Not Planned');
+              } else {
+                await setSelect(fStatus, 'Todo', { 'todo':'todo' });
+              }
             }
             
             await setSelect(fTipo,   tipo,   { 'estandar':'estandar', 'estándar':'estandar', 'normal':'normal', 'emergencia':'emergencia', 'urgente':'emergencia' })
@@ -255,7 +249,7 @@ jobs:
             await setDate  (fVFin?.id,    toDateOnly(vFinTxt))
             await setText  (fSolic?.id,   solicitante)
 
-  set-project-done-on-close:
+  set-project-status-on-close:
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
@@ -290,6 +284,7 @@ jobs:
             )
             const item = items.node.items.nodes.find(n=>n.content?.number===issueNum)
             if(!item) return
+            
             const fields = await github.graphql(
               `query($projectId:ID!){
                 node(id:$projectId){ ... on ProjectV2 {
@@ -302,12 +297,25 @@ jobs:
             )
             const status = fields.node.fields.nodes.find(f=>f.name.toLowerCase()==='status')
             if(!status) return
-            const optDone = (status.options||[]).find(o=>o.name.toLowerCase()==='done')
-            if(!optDone) return
+            
+            const reason = context.payload.issue.state_reason
+            let optionName = 'Done';
+            if (reason === 'not_planned') {
+              optionName = 'Not Planned';
+            }
+            
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
+            const opt = (status.options||[]).find(o=>norm(o.name) === norm(optionName) || norm(o.name) === norm('no planeado'))
+            
+            if(!opt) {
+              console.log(`Opción de status "${optionName}" no encontrada.`);
+              return
+            }
+
             await github.graphql(
               `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                 updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{singleSelectOptionId:$opt}}){ clientMutationId }
-              }`, { projectId, itemId: item.id, fieldId: status.id, opt: optDone.id }
+              }`, { projectId, itemId: item.id, fieldId: status.id, opt: opt.id }
             )
 
   remove-project-item-on-delete:
