@@ -18,6 +18,8 @@ env:
   USER_LOGIN: ErickGuerron
   PROJECT_NUMBER: 1
   PROJECT_TITLE: Formularios-control-cambios
+  PROJECT_NUMBER_USER: 1
+  PROJECT_TITLE_USER: Formularios-control-cambios
 
 jobs:
   process_rfc_on_github:
