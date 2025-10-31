@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  repository-projects: write 
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -21,9 +22,6 @@ env:
   PROJECT_TITLE: Formularios-control-cambios
 
 jobs:
-  # --- JOBS 'labels' y 'add-to-project' ELIMINADOS ---
-  # (Fusionados en el job de abajo)
-
   process_rfc_on_github:
     # Este job se ejecuta si el issue se crea o se edita
     if: github.event.action == 'opened' || github.event.action == 'edited'
@@ -39,7 +37,7 @@ jobs:
             const repo  = context.repo.repo
             const body = issue.body || ''
             
-            // --- 1. Lógica de 'labels' (de tu job original) ---
+            // --- 1. Lógica de 'labels' ---
             const grab = (label) => {
               const variants = [
                 new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
@@ -86,7 +84,6 @@ jobs:
             const PROJECT_TITLE = process.env.PROJECT_TITLE
             
             async function findProjectV2() {
-              // ... (función 'findProjectV2' sin cambios) ...
               const tryOrg = await github.graphql(
                 `query($login:String!){
                   organization(login:$login){
@@ -138,7 +135,6 @@ jobs:
 
             // --- INICIO DE LA CORRECCIÓN DE RACE CONDITION ---
             
-            // 1. Primero, BUSCAMOS si el item ya existe en el proyecto
             const itemsRes = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){
@@ -153,7 +149,6 @@ jobs:
             let item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
             let itemId;
 
-            // 2. Si NO existe (ej. 'opened'), lo CREAMOS y ESPERAMOS (await) la respuesta
             if (!item) {
               console.log(`Issue ${issue.number} no encontrado en el proyecto. Añadiendo...`);
               const addRes = await github.graphql(
@@ -163,9 +158,9 @@ jobs:
                   }
                 }`, { projectId, contentId: issueId }
               );
+              // Esta es la corrección: Obtenemos el ID de la respuesta, no de una búsqueda.
               itemId = addRes.addProjectV2ItemById.item.id;
             } else {
-              // 3. Si SÍ existe (ej. 'edited'), solo usamos su ID
               console.log(`Issue ${issue.number} ya existe en el proyecto. Actualizando...`);
               itemId = item.id;
             }
@@ -230,7 +225,7 @@ jobs:
               if(!fieldId || !val) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
-                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
+                  updateProjectVSItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId, val }
               )
             }
@@ -243,7 +238,6 @@ jobs:
               )
             }
             
-            // Solo actualiza el 'Status' si el evento es 'opened'
             if (context.payload.action === 'opened') {
               await setSelect(fStatus, 'Todo', { 'todo':'todo' });
             }
@@ -260,7 +254,6 @@ jobs:
             await setText  (fSolic?.id,   solicitante)
 
   set-project-done-on-close:
-    # Este 'if' es correcto, se dispara con 'on: issues'
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
@@ -268,7 +261,6 @@ jobs:
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
-            # ... (Este script está bien, no necesita cambios) ...
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER,10)
@@ -317,7 +309,6 @@ jobs:
             )
 
   remove-project-item-on-delete:
-    # Este 'if' es correcto, se dispara con 'on: issues'
     if: github.event.action == 'deleted'
     runs-on: ubuntu-latest
     steps:
@@ -325,7 +316,6 @@ jobs:
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
-            # ... (Este script está bien, no necesita cambios) ...
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER,10)
