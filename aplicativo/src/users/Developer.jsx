@@ -17,7 +17,7 @@ export default function App() {
     changeType: "estandar",
     risk: "bajo",
     approvers2: "otro@dominio.com",
-    solicitor: "Erick Guerron (Solicitante)",
+    solicitor: "1 ",
   });
 
   const [loading, setLoading] = useState(false);
