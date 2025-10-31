@@ -13,11 +13,6 @@ export class CreateRfcDto {
   @IsNotEmpty()
   title: string;
 
-  @ApiProperty({ example: 'Descripción del cambio...' })
-  @IsString()
-  @IsNotEmpty()
-  descripcion: string;
-
   @ApiProperty({
     example: 'Estándar',
     enum: ['Estándar', 'Normal', 'Emergencia']

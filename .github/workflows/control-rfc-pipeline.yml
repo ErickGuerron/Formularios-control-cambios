@@ -66,7 +66,7 @@ jobs:
 
   add-to-project:
     needs: labels
-    if: (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'rfc')) || (github.event.action == 'labeled' && github.event.label.name == 'rfc')
+    if: (github.event.action == 'opened, closed' && contains(github.event.issue.labels.*.name, 'rfc')) || (github.event.action == 'labeled' && github.event.label.name == 'rfc')
     runs-on: ubuntu-latest
     steps:
       - name: Add to Project

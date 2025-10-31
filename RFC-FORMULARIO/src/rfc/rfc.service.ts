@@ -31,8 +31,6 @@ export class RfcService {
 
   private issueBody(d: CreateRfcDto) {
     return [
-      `### Descripción`,
-      d.descripcion || '',
       `### Tipo de cambio`,
       d.tipo || '',
       `### Riesgo`,
