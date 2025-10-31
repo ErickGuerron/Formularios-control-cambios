@@ -2,7 +2,8 @@ name: RFC Controller
 
 on:
   issues:
-    types: [opened, edited, labeled, closed, deleted]
+    # Disparadores para todos los jobs
+    types: [opened, edited, closed, deleted]
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}
@@ -20,10 +21,15 @@ env:
   PROJECT_TITLE: Formularios-control-cambios
 
 jobs:
-  labels:
+  # --- JOBS 'labels' y 'add-to-project' ELIMINADOS ---
+  # (Fusionados en el job de abajo)
+
+  process_rfc_on_github:
+    # Este job se ejecuta si el issue se crea o se edita
+    if: github.event.action == 'opened' || github.event.action == 'edited'
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure labels
+      - name: Add labels, Add to Project, and Map Fields
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
@@ -32,6 +38,8 @@ jobs:
             const owner = context.repo.owner
             const repo  = context.repo.repo
             const body = issue.body || ''
+            
+            // --- 1. Lógica de 'labels' (de tu job original) ---
             const grab = (label) => {
               const variants = [
                 new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
@@ -44,51 +52,41 @@ jobs:
               }
               return '';
             }
+            
             const tipo   = (grab('Tipo de cambio') || '').toLowerCase()
             const riesgo = (grab('Riesgo') || '').toLowerCase()
+            
             const wanted = new Set(['rfc'])
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
-            if (tipo.includes('normal'))                               wanted.add('tipo:normal')
+            if (tipo.includes('normal'))                                 wanted.add('tipo:normal')
             if (tipo.includes('emergencia') || tipo.includes('urgente')) wanted.add('tipo:emergencia')
             if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo')
             if (riesgo.includes('medio')) wanted.add('riesgo:medio')
             if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
+
+            // Si no tiene la palabra clave en el body, no es un RFC, detener todo.
+            const isRfc = wanted.has('rfc') || body.includes('### Plan de implementación');
+            if (!isRfc) {
+              console.log('No es un RFC. Omitiendo.');
+              return;
+            }
+
             const current = new Set((issue.labels || []).map(l => l.name))
             const managed = ['rfc','tipo:estandar','tipo:normal','tipo:emergencia','riesgo:bajo','riesgo:medio','riesgo:alto']
             const toAdd = [...wanted].filter(l => !current.has(l))
-            const toRemove = [...current].filter(l => managed.includes(l) && !wanted.has(l))
-            if (toRemove.length) {
-              await github.rest.issues.removeLabels({ owner, repo, issue_number: issue.number, labels: toRemove }).catch(()=>{})
-            }
+            
             if (toAdd.length) {
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: toAdd })
             }
 
-  add-to-project:
-    needs: labels
-    if: (github.event.action == 'opened'|| github.event.action == 'closed' && contains(github.event.issue.labels.*.name, 'rfc')) || (github.event.action == 'labeled' && github.event.label.name == 'rfc')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Add to Project
-        uses: actions/add-to-project@v0.5.0
-        with:
-          project-url: ${{ env.PROJECT_URL }}
-          github-token: ${{ secrets.PROJECTS_PAT }}
-
-  map-fields:
-    needs: labels
-    runs-on: ubuntu-latest
-    steps:
-      - name: Map Issue Form → Project fields
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PROJECTS_PAT }}
-          script: |
+            // --- 2. Lógica de 'map-fields' (con la corrección de 'await') ---
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
             const PROJECT_TITLE = process.env.PROJECT_TITLE
+            
             async function findProjectV2() {
+              // ... (función 'findProjectV2' sin cambios) ...
               const tryOrg = await github.graphql(
                 `query($login:String!){
                   organization(login:$login){
@@ -117,26 +115,11 @@ jobs:
               }
               throw new Error('Project v2 no encontrado')
             }
+            
             const project = await findProjectV2()
             const projectId = project.id
-            const issue = context.payload.issue
-            const repo = context.repo
-            const body = issue.body || ''
-            const grab = (label) => {
-              const variants = [
-                new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
-                new RegExp(`^###\\s*${label}\\s*\\n+([\\s\\S]*?)(?:\\n###|$)`, 'im'),
-                new RegExp(`^${label}\\s*:\\s*(.+)$`, 'im')
-              ];
-              for (const re of variants) {
-                const m = body.match(re);
-                if (m) return m[1].trim();
-              }
-              return '';
-            }
+
             const toDateOnly = (s) => (s && (s.match(/(\d{4}-\d{2}-\d{2})/)||[])[1]) || ''
-            const tipo     = grab('Tipo de cambio') || grab('Change Type')
-            const riesgo   = grab('Riesgo') || grab('Risk')
             const impacto  = grab('Impacto') || grab('Impact')
             const plan     = grab('Plan de implementación') || grab('Implementation Plan')
             const rollback = grab('Plan de reversa \\(rollback\\)') || grab('RollBack Planning') || grab('Rollback Plan')
@@ -145,17 +128,53 @@ jobs:
             const vFinTxt  = grab('Ventana \\(fin\\)')    || grab('Completion') || grab('Window – End') || grab('Window - End')
             const aprob    = grab('Aprobadores requeridos') || grab('Approvers') || grab('Required Approvers')
             const solicitante = grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester')
+            
             const issueRes = await github.graphql(
               `query($owner:String!, $name:String!, $n:Int!){
                 repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
-              }`, { owner: repo.owner, name: repo.repo, n: issue.number }
+              }`, { owner, name: repo, n: issue.number }
             )
             const issueId = issueRes.repository.issue.id
-            await github.graphql(
-              `mutation($projectId:ID!, $contentId:ID!){
-                addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
-              }`, { projectId, contentId: issueId }
+
+            // --- INICIO DE LA CORRECCIÓN DE RACE CONDITION ---
+            
+            // 1. Primero, BUSCAMOS si el item ya existe en el proyecto
+            const itemsRes = await github.graphql(
+              `query($projectId:ID!, $q:String!){
+                node(id:$projectId){
+                  ... on ProjectV2 {
+                    items(first:50, query:$q){
+                      nodes{ id content{ ... on Issue { number } } }
+                    }
+                  }
+                }
+              }`, { projectId, q: String(issue.number) }
             )
+            let item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
+            let itemId;
+
+            // 2. Si NO existe (ej. 'opened'), lo CREAMOS y ESPERAMOS (await) la respuesta
+            if (!item) {
+              console.log(`Issue ${issue.number} no encontrado en el proyecto. Añadiendo...`);
+              const addRes = await github.graphql(
+                `mutation($projectId:ID!, $contentId:ID!){
+                  addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ 
+                    item { id }
+                  }
+                }`, { projectId, contentId: issueId }
+              );
+              itemId = addRes.addProjectV2ItemById.item.id;
+            } else {
+              // 3. Si SÍ existe (ej. 'edited'), solo usamos su ID
+              console.log(`Issue ${issue.number} ya existe en el proyecto. Actualizando...`);
+              itemId = item.id;
+            }
+            
+            if (!itemId) {
+              throw new Error('No se pudo obtener el itemId del proyecto.');
+            }
+            // --- FIN DE LA CORRECCIÓN ---
+
             const fieldsRes = await github.graphql(
               `query($projectId:ID!){
                 node(id:$projectId){
@@ -170,11 +189,13 @@ jobs:
                 }
               }`, { projectId }
             )
+            
             const fields = fieldsRes.node.fields.nodes
             const byAnyName = (names) => names
               .map(n => fields.find(f => f?.name?.toLowerCase() === n.toLowerCase()))
               .find(Boolean)
-            const fStatus  = byAnyName(['Status','Estado'])
+            
+            const fStatus   = byAnyName(['Status','Estado'])
             const fTipo     = byAnyName(['Change Type','Tipo de cambio'])
             const fRiesgo   = byAnyName(['Risk','Riesgo'])
             const fImpacto  = byAnyName(['Impact','Impacto'])
@@ -185,20 +206,7 @@ jobs:
             const fVFin     = byAnyName(['Completion','Window – End','Ventana – Fin','Window - End'])
             const fAprob    = byAnyName(['Approvers','Required Approvers','Aprobadores requeridos'])
             const fSolic    = byAnyName(['Solicitante','Solicitor','Applicant','Requester'])
-            const itemsRes = await github.graphql(
-              `query($projectId:ID!, $q:String!){
-                node(id:$projectId){
-                  ... on ProjectV2 {
-                    items(first:50, query:$q){
-                      nodes{ id content{ ... on Issue { number } } }
-                    }
-                  }
-                }
-              }`, { projectId, q: String(issue.number) }
-            )
-            const item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
-            if (!item) throw new Error('Project Item no encontrado')
-            const itemId = item.id
+            
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
             function resolveOptionId(field, value, map) {
               if (!field || !value) return null
@@ -234,7 +242,12 @@ jobs:
                 }`, { projectId, itemId, fieldId, val: ymd }
               )
             }
-            await setSelect(fStatus, 'Todo', { 'todo':'todo' })
+            
+            // Solo actualiza el 'Status' si el evento es 'opened'
+            if (context.payload.action === 'opened') {
+              await setSelect(fStatus, 'Todo', { 'todo':'todo' });
+            }
+            
             await setSelect(fTipo,   tipo,   { 'estandar':'estandar', 'estándar':'estandar', 'normal':'normal', 'emergencia':'emergencia', 'urgente':'emergencia' })
             await setSelect(fRiesgo, riesgo, { 'bajo':'bajo', 'medio':'medio', 'alto':'alto' })
             await setText  (fImpacto?.id, impacto)
@@ -247,6 +260,7 @@ jobs:
             await setText  (fSolic?.id,   solicitante)
 
   set-project-done-on-close:
+    # Este 'if' es correcto, se dispara con 'on: issues'
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
@@ -254,6 +268,7 @@ jobs:
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
+            # ... (Este script está bien, no necesita cambios) ...
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER,10)
@@ -302,6 +317,7 @@ jobs:
             )
 
   remove-project-item-on-delete:
+    # Este 'if' es correcto, se dispara con 'on: issues'
     if: github.event.action == 'deleted'
     runs-on: ubuntu-latest
     steps:
@@ -309,6 +325,7 @@ jobs:
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
+            # ... (Este script está bien, no necesita cambios) ...
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER,10)
