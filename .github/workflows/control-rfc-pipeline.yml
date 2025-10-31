@@ -12,7 +12,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
-  projects: write 
+  projects: write # <-- Permiso correcto
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -23,7 +23,6 @@ env:
 
 jobs:
   process_rfc_on_github:
-    # Este job se ejecuta si el issue se crea o se edita
     if: github.event.action == 'opened' || github.event.action == 'edited'
     runs-on: ubuntu-latest
     steps:
@@ -62,7 +61,6 @@ jobs:
             if (riesgo.includes('medio')) wanted.add('riesgo:medio')
             if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
 
-            // Si no tiene la palabra clave en el body, no es un RFC, detener todo.
             const isRfc = wanted.has('rfc') || body.includes('### Plan de implementación');
             if (!isRfc) {
               console.log('No es un RFC. Omitiendo.');
@@ -77,7 +75,7 @@ jobs:
               await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: toAdd })
             }
 
-            // --- 2. Lógica de 'map-fields' (con la corrección de 'await') ---
+            // --- 2. Lógica de 'map-fields' ---
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
             const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
@@ -135,7 +133,8 @@ jobs:
 
             // --- INICIO DE LA CORRECCIÓN DE RACE CONDITION ---
             
-            const itemsRes = await github.graphql(
+            // 1. Buscamos si el item ya existe
+            const itemsSearchRes = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){
                   ... on ProjectV2 {
@@ -146,11 +145,13 @@ jobs:
                 }
               }`, { projectId, q: String(issue.number) }
             )
-            let item = itemsRes.node.items.nodes.find(n => n.content?.number === issue.number)
+            let item = itemsSearchRes.node.items.nodes.find(n => n.content?.number === issue.number)
             let itemId;
 
+            // 2. Si NO existe (evento 'opened')
             if (!item) {
               console.log(`Issue ${issue.number} no encontrado en el proyecto. Añadiendo...`);
+              // LO CREAMOS y capturamos la respuesta en 'addRes'
               const addRes = await github.graphql(
                 `mutation($projectId:ID!, $contentId:ID!){
                   addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ 
@@ -158,9 +159,10 @@ jobs:
                   }
                 }`, { projectId, contentId: issueId }
               );
-              // Esta es la corrección: Obtenemos el ID de la respuesta, no de una búsqueda.
+              // Usamos el ID de la RESPUESTA, no de una búsqueda
               itemId = addRes.addProjectV2ItemById.item.id;
             } else {
+            // 3. Si SÍ existe (evento 'edited')
               console.log(`Issue ${issue.number} ya existe en el proyecto. Actualizando...`);
               itemId = item.id;
             }
@@ -225,7 +227,7 @@ jobs:
               if(!fieldId || !val) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
-                  updateProjectVSItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId, val }
               )
             }
