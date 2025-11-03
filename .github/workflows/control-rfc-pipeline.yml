@@ -30,7 +30,7 @@ jobs:
       - name: Add labels, Add to Project, and Map Fields
         uses: actions/github-script@v7
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
             const issue = context.payload.issue
             const owner = context.repo.owner
@@ -51,9 +51,8 @@ jobs:
               return '';
             }
 
-            const tipo       = (grab('Tipo de cambio') || '').toLowerCase()
-            const riesgo     = (grab('Riesgo') || '').toLowerCase()
-            const prioridad  = grab('priorityname') || grab('Prioridad') || grab('Priority') || ''
+            const tipo   = (grab('Tipo de cambio') || '').toLowerCase()
+            const riesgo = (grab('Riesgo') || '').toLowerCase()
 
             const wanted = new Set(['rfc'])
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
@@ -76,47 +75,67 @@ jobs:
 
             const ORG_LOGIN = process.env.ORG_LOGIN
             const USER_LOGIN = process.env.USER_LOGIN
-            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER, 10)
-            const PROJECT_TITLE  = process.env.PROJECT_TITLE
+            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER || '0', 10)
+            const PROJECT_TITLE  = process.env.PROJECT_TITLE || ''
             const PROJECT_NUMBER_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10)
             const PROJECT_TITLE_USER  = process.env.PROJECT_TITLE_USER || ''
+            const PROJECT_URL = process.env.PROJECT_URL || ''
 
-            async function findProjectV2ByUser(numberOrTitle) {
-              const r = await github.graphql(
-                `query($login:String!){
-                  user(login:$login){ projectsV2(first:50){ nodes{ id title number } } }
-                }`, { login: USER_LOGIN }
-              ).catch(()=>null)
-              if (!r?.user?.projectsV2?.nodes?.length) return null
-              const nodes = r.user.projectsV2.nodes
-              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) {
-                const hit = nodes.find(n => n.number === numberOrTitle)
-                if (hit) return hit.id
-              }
-              if (typeof numberOrTitle === 'string' && numberOrTitle) {
-                const hit = nodes.find(n => n.title === numberOrTitle)
+            async function resolveFromUrl(url){
+              const mu = url.match(/https:\/\/github\.com\/users\/([^/]+)\/projects\/(\d+)/i)
+              if (mu) {
+                const login = mu[1], num = parseInt(mu[2],10)
+                const r = await github.graphql(
+                  `query($login:String!){
+                    user(login:$login){ projectsV2(first:100){ nodes{ id number title } } }
+                  }`, { login }
+                ).catch(()=>null)
+                const hit = r?.user?.projectsV2?.nodes?.find(n=>n.number===num)
                 if (hit) return hit.id
               }
               return null
             }
-            async function findProjectV2Main() {
-              let id = await findProjectV2ByUser(PROJECT_NUMBER) || await findProjectV2ByUser(PROJECT_TITLE)
-              if (id) return id
-              if (ORG_LOGIN) {
-                const tryOrg = await github.graphql(
-                  `query($login:String!){
-                    organization(login:$login){ projectsV2(first:50){ nodes{ id title number } } }
-                  }`, { login: ORG_LOGIN }
-                ).catch(()=>null)
-                const nodes = tryOrg?.organization?.projectsV2?.nodes || []
-                let hit = nodes.find(n => n.number === PROJECT_NUMBER)
-                if (!hit && PROJECT_TITLE) hit = nodes.find(n => n.title === PROJECT_TITLE)
-                if (hit) return hit.id
+            async function resolveByUser(numberOrTitle){
+              const r = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){ projectsV2(first:100){ nodes{ id number title } } }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null)
+              const nodes = r?.user?.projectsV2?.nodes || []
+              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) {
+                const hit = nodes.find(n=>n.number===numberOrTitle); if (hit) return hit.id
               }
-              throw new Error('Project v2 (principal) no encontrado')
+              if (typeof numberOrTitle === 'string' && numberOrTitle) {
+                const hit = nodes.find(n=>n.title===numberOrTitle); if (hit) return hit.id
+              }
+              return null
+            }
+            async function resolveByOrg(numberOrTitle){
+              if (!ORG_LOGIN) return null
+              const r = await github.graphql(
+                `query($login:String!){
+                  organization(login:$login){ projectsV2(first:100){ nodes{ id number title } } }
+                }`, { login: ORG_LOGIN }
+              ).catch(()=>null)
+              const nodes = r?.organization?.projectsV2?.nodes || []
+              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) {
+                const hit = nodes.find(n=>n.number===numberOrTitle); if (hit) return hit.id
+              }
+              if (typeof numberOrTitle === 'string' && numberOrTitle) {
+                const hit = nodes.find(n=>n.title===numberOrTitle); if (hit) return hit.id
+              }
+              return null
+            }
+
+            async function findProjectV2Main() {
+              let id = await resolveFromUrl(PROJECT_URL)
+              if (!id) id = await resolveByUser(PROJECT_NUMBER) || await resolveByUser(PROJECT_TITLE)
+              if (!id) id = await resolveByOrg(PROJECT_NUMBER)  || await resolveByOrg(PROJECT_TITLE)
+              return id
             }
             async function findProjectV2User() {
-              return await findProjectV2ByUser(PROJECT_NUMBER_USER) || await findProjectV2ByUser(PROJECT_TITLE_USER)
+              let id = await resolveByUser(PROJECT_NUMBER_USER) || await resolveByUser(PROJECT_TITLE_USER)
+              return id
             }
 
             const issueRes = await github.graphql(
@@ -138,14 +157,14 @@ jobs:
                   }
                 }`, { projectId, q: String(issue.number) }
               )
-              let it = srch.node.items.nodes.find(n=>n.content?.number===issue.number)
+              let it = srch?.node?.items?.nodes?.find(n=>n.content?.number===issue.number)
               if (it) return it.id
               const add = await github.graphql(
                 `mutation($projectId:ID!, $contentId:ID!){
                   addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
                 }`, { projectId, contentId: issueId }
-              )
-              return add.addProjectV2ItemById.item.id
+              ).catch(()=>null)
+              return add?.addProjectV2ItemById?.item?.id || null
             }
 
             async function getFields(projectId){
@@ -162,11 +181,11 @@ jobs:
                     }
                   }
                 }`, { projectId }
-              )
-              return r.node.fields.nodes
+              ).catch(()=>null)
+              return r?.node?.fields?.nodes || []
             }
             const setSelect = async(projectId,itemId,field,optName)=>{
-              if(!field || !optName) return
+              if(!projectId || !itemId || !field || !optName) return
               const opts = field.options || []
               const opt = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)))
               if(!opt) return
@@ -174,23 +193,23 @@ jobs:
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId: field.id, opt: opt.id }
-              )
+              ).catch(()=>null)
             }
             const setText = async(projectId,itemId,fieldId,val)=>{
-              if(!fieldId || !val) return
+              if(!projectId || !itemId || !fieldId || !val) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId: fieldId, val: val }
-              )
+              ).catch(()=>null)
             }
             const setDate = async(projectId,itemId,fieldId,ymd)=>{
-              if(!fieldId || !ymd) return
+              if(!projectId || !itemId || !fieldId || !ymd) return
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:Date!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId: fieldId, val: ymd }
-              )
+              ).catch(()=>null)
             }
             const toDateOnly = (s) => (s && (s.match(/(\d{4}-\d{2}-\d{2})/)||[])[1]) || ''
 
@@ -202,35 +221,34 @@ jobs:
             const vVFin     = grab('Ventana \\(fin\\)')    || grab('Completion')
             const vAprob    = grab('Aprobadores requeridos') || grab('Approvers')
             const vSolic    = grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester')
-            const vMotivo   = grab('Motivo de cambio')
+            const vPriority = grab('priorityname') || grab('Priority') || tipo
 
             if (hasUserLabel) {
               const projectIdUser = await findProjectV2User()
-              if (!projectIdUser) return
+              if (!projectIdUser) { console.log('Project usuarios no encontrado o sin permisos'); return }
               const itemIdUser = await ensureItem(projectIdUser)
+              if (!itemIdUser) { console.log('No se pudo crear/encontrar item en Project usuarios'); return }
               const fieldsUser = await getFields(projectIdUser)
               const byU = (names)=> names.map(n=>fieldsUser.find(f=>norm(f?.name)===norm(n))).find(Boolean)
 
-              const fStatusU      = byU(['Status'])
-              const fStatusCccU   = byU(['Status_CCC','Status CCC','status_ccc'])
-              const fChangeTypeU  = byU(['Change Type','Tipo de cambio'])
-              const fRiesgoU      = byU(['Risk','Riesgo'])
-              const fImpactoU     = byU(['Impact','Impacto'])
-              const fPlanU        = byU(['Implementation Plan','Plan de implementación'])
-              const fRollbackU    = byU(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
-              const fPruebasU     = byU(['Test Planning','Plan de pruebas'])
-              const fAprobU       = byU(['Approvers'])
-              const fSolicU       = byU(['Solicitor','Solicitante','Applicant','Requester'])
-              const fStartU       = byU(['Start date','Init'])
-              const fTargetU      = byU(['Target date','Completion'])
+              const fStatusU     = byU(['Status'])
+              const fStatusCccU  = byU(['Status_CCC','Status CCC','status_ccc'])
+              const fChangeTypeU = byU(['Change Type'])
+              const fRiesgoU     = byU(['Risk','Riesgo'])
+              const fImpactoU    = byU(['Impact','Impacto'])
+              const fPlanU       = byU(['Implementation Plan','Plan de implementación'])
+              const fRollbackU   = byU(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
+              const fPruebasU    = byU(['Test Planning','Plan de pruebas'])
+              const fAprobU      = byU(['Approvers'])
+              const fSolicU      = byU(['Solicitor','Solicitante','Applicant','Requester'])
+              const fStartU      = byU(['Start date','Init'])
+              const fTargetU     = byU(['Target date','Completion'])
 
               if (context.payload.action === 'opened') {
                 await setSelect(projectIdUser, itemIdUser, fStatusU, 'Backlog')
                 await setSelect(projectIdUser, itemIdUser, fStatusCccU, 'Inbox')
               }
-
-              const changeTypeValue = prioridad || tipo
-              await setSelect(projectIdUser, itemIdUser, fChangeTypeU, changeTypeValue)
+              await setSelect(projectIdUser, itemIdUser, fChangeTypeU, vPriority)
               await setSelect(projectIdUser, itemIdUser, fRiesgoU, riesgo)
               await setText  (projectIdUser, itemIdUser, fImpactoU?.id, vImpacto)
               await setText  (projectIdUser, itemIdUser, fPlanU?.id,    vPlan)
@@ -244,7 +262,9 @@ jobs:
             }
 
             const projectIdMain = await findProjectV2Main()
+            if (!projectIdMain) { console.log('Project principal no encontrado o sin permisos'); return }
             const itemIdMain = await ensureItem(projectIdMain)
+            if (!itemIdMain) { console.log('No se pudo crear/encontrar item en Project principal'); return }
             const fieldsMain = await getFields(projectIdMain)
             const byM = (names)=> names.map(n=>fieldsMain.find(f=>norm(f?.name)===norm(n))).find(Boolean)
 
