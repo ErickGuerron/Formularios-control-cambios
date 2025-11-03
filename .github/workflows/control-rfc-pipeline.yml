@@ -16,7 +16,7 @@ permissions:
   contents: read
   issues: write
   repository-projects: write
-  pull-requests: read # Dejar en 'read', ya que 'issues: write' nos permite comentar en PRs
+  pull-requests: read
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -307,15 +307,16 @@ jobs:
             await setText  (projectIdMain, itemIdMain, fAprobM?.id,   grab('Aprobadores requeridos') || grab('Approvers'));
             await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'));
 
-  # --- Job: enforce-user-post-approve (Sin cambios) ---
-  enforce-user-post-approve:
+  # --- RENOMBRADO: Ahora solo se ejecuta para issues con etiqueta 'user' ---
+  process-user-approval:
     if: |
       github.event_name == 'issues' &&
       github.event.action == 'labeled' &&
       (github.event.label.name == 'approved' ||
         github.event.label.name == 'Approved' ||
         github.event.label.name == 'aprobado' ||
-        github.event.label.name == 'Aprobado')
+        github.event.label.name == 'Aprobado') &&
+      contains(github.event.issue.labels.*.name, 'user')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -691,7 +692,141 @@ jobs:
             Puedes proceder con la implementación según el plan establecido.`
                         });
 
-  # --- Job: process-denial (Sin cambios) ---
+  # --- NUEVO JOB: Para issues 'rfc' SIN etiqueta 'user' ---
+  process-rfc-approval:
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      (github.event.label.name == 'approved' ||
+        github.event.label.name == 'Approved' ||
+        github.event.label.name == 'aprobado' ||
+        github.event.label.name == 'Aprobado') &&
+      contains(github.event.issue.labels.*.name, 'rfc') &&
+      !contains(github.event.issue.labels.*.name, 'user')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Status to Ready and Approved
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const issue = context.payload.issue;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const ORG_LOGIN  = process.env.ORG_LOGIN;
+            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10);
+            
+            async function getUserProjByNum(n){
+              const r = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){ projectsV2(first:50){ nodes{ id number } } }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+
+            async function getOrgProjByNum(n){
+              if(!ORG_LOGIN) return null;
+              const r = await github.graphql(
+                `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: ORG_LOGIN }
+              ).catch(()=>null);
+              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+            
+            async function findItemId(projectId, issueNumber){
+              const r = await github.graphql(
+                `query($projectId:ID!, $q:String!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                  } }
+                }`, { projectId, q: String(issueNumber) }
+              );
+              return r?.node?.items?.nodes?.find(n=>n.content?.number===issueNumber)?.id || null;
+            }
+
+            async function setSelect(projectId, itemId, field, optName){
+              if(!field || !optName) return false;
+              const opts = field.options || [];
+              const normalizedOptName = norm(optName);
+              const wanted = opts.find(o=>norm(o.name)===normalizedOptName) || opts.find(o=>norm(o.name).includes(normalizedOptName));
+              if(!wanted) {
+                console.log(`Opción "${normalizedOptName}" no encontrada para el campo "${field.name}"`);
+                return false;
+              }
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+              );
+              return true;
+            }
+            
+            const projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
+            if (!projectId) {
+              console.log('Proyecto principal no encontrado.');
+              return;
+            }
+            
+            const itemId = await findItemId(projectId, issue.number);
+            if (!itemId) {
+              console.log('Item no encontrado en el proyecto principal.');
+              return;
+            }
+            
+            // Re-abrir el issue si estaba cerrado
+            if (issue.state === 'closed') {
+              console.log('El issue estaba cerrado. Reabriendo.');
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'open'
+              });
+            }
+
+            const fields = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            );
+            
+            const allFields = fields.node.fields.nodes;
+            const fStatusCcc = allFields.find(f => norm(f?.name) === 'status_ccc');
+            const fStatus = allFields.find(f => norm(f?.name) === 'status');
+            
+            await setSelect(projectId, itemId, fStatusCcc, 'Approved');
+            await setSelect(projectId, itemId, fStatus, 'Ready');
+            
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                name: 'denied'
+              });
+            } catch(e) {}
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `## ✅ RFC Aprobado
+
+            El RFC ha sido aprobado.
+
+            **Estado actualizado:** Ready
+            **Estado CCC:** Approved
+            **Fecha:** ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`
+                        });
+
+  # --- Job: process-denial (ACTUALIZADO para manejar 'rfc' y 'user') ---
   process-denial:
     if: |
       github.event_name == 'issues' &&
@@ -709,13 +844,17 @@ jobs:
             const issue = context.payload.issue;
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
             
-            const hasUser = (issue.labels || []).some(l => norm(l.name) === 'user');
-            if (!hasUser) {
-              console.log('No es un issue de usuario, saltando.');
+            const hasRfc = (issue.labels || []).some(l => norm(l.name) === 'rfc');
+            if (!hasRfc) {
+              console.log('No es un issue RFC, saltando.');
               return;
             }
+
+            const hasUser = (issue.labels || []).some(l => norm(l.name) === 'user');
             
             const USER_LOGIN = process.env.USER_LOGIN;
+            const ORG_LOGIN  = process.env.ORG_LOGIN;
+            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10);
             const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
             
             async function getUserProjByNum(n){
@@ -727,6 +866,15 @@ jobs:
               return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
             
+            async function getOrgProjByNum(n){
+              if(!ORG_LOGIN) return null;
+              const r = await github.graphql(
+                `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: ORG_LOGIN }
+              ).catch(()=>null);
+              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+
             async function findItemId(projectId, issueNumber){
               const r = await github.graphql(
                 `query($projectId:ID!, $q:String!){
@@ -738,9 +886,15 @@ jobs:
               return r?.node?.items?.nodes?.find(n=>n.content?.number===issueNumber)?.id || null;
             }
             
-            const projectId = await getUserProjByNum(PN_USER);
+            let projectId = null;
+            if (hasUser) {
+              projectId = await getUserProjByNum(PN_USER);
+            } else {
+              projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
+            }
+
             if (!projectId) {
-              console.log('Proyecto de usuario no encontrado.');
+              console.log('Proyecto (user o main) no encontrado.');
               return;
             }
             
@@ -816,13 +970,13 @@ jobs:
               issue_number: issue.number,
               body: `## ❌ Solicitud Denegada
 
-            El issue ha sido marcado como denegado y cerrado.
+              El issue ha sido marcado como denegado y cerrado.
 
-            **Estado actualizado:** Not Planned
-            **Estado CCC:** Denied`
-                        });
+              **Estado actualizado:** Not Planned
+              **Estado CCC:** Denied`
+                          });
 
-  # --- Job: process-pr-link (MODIFICADO para comentar sobre issues cerrados) ---
+  # --- Job: process-pr-link (ACTUALIZADO con comentarios en PR para issues cerrados) ---
   process-pr-link:
     if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'edited' || github.event.action == 'synchronize') && github.base_ref == 'main'
     runs-on: ubuntu-latest
@@ -917,7 +1071,6 @@ jobs:
               return true;
             }
             
-            // Colección de comentarios para no repetir
             const prComments = new Map();
 
             for (const issueNum of issueNumbers) {
@@ -934,8 +1087,13 @@ jobs:
                 console.log(`No se pudo obtener issue #${issueNum}: ${e.message}`);
                 continue;
               }
+              
+              const hasRfc = (issue.data.labels || []).some(l => norm(l.name) === 'rfc');
+              if (!hasRfc) {
+                console.log(`Issue #${issueNum} no tiene la etiqueta 'rfc'. Saltando.`);
+                continue;
+              }
 
-              // --- ¡NUEVA LÓGICA PARA ISSUES CERRADOS! ---
               if (issue.data.state !== 'open') {
                 console.log(`Issue #${issueNum} ya está cerrado. Verificando motivo...`);
                 
@@ -946,7 +1104,7 @@ jobs:
                 if (hasDeniedLabel) {
                   commentBody = `⚠️ **Referencia a Issue Denegado:** El Issue #${issueNum} (referenciado en este PR) fue denegado y está cerrado.`;
                 } else if (reason === 'not_planned') {
-                  commentBody = `ℹ️ **Referencia a Issue No Planeado:** El Issue #${issueNum} (referenciado en este PR) está cerrado como "No Planeado" (pendiente de revisión).`;
+                  commentBody = `ℹ️ **Referencia a Issue No Planeado:** El Issue #${issueNum} (referenciado en este PR) está cerrado como "No Planeado".`;
                 } else if (reason === 'completed') {
                   commentBody = `✅ **Referencia a Issue Completado:** El Issue #${issueNum} (referenciado en este PR) ya fue completado.`;
                 }
@@ -955,12 +1113,6 @@ jobs:
                   prComments.set(commentBody, true);
                 }
                 
-                continue; // Saltar al siguiente issue, no procesar este
-              }
-              
-              const hasRfc = (issue.data.labels || []).some(l => norm(l.name) === 'rfc');
-              if (!hasRfc) {
-                console.log(`Issue #${issueNum} no tiene la etiqueta 'rfc'. Saltando.`);
                 continue;
               }
               
@@ -1008,7 +1160,6 @@ jobs:
                               }
                             }
                             
-                            // Publicar los comentarios en el PR
                             if (prComments.size > 0) {
                               const finalComment = Array.from(prComments.keys()).join('\n\n');
                               await github.rest.issues.createComment({
@@ -1017,9 +1168,9 @@ jobs:
                                 issue_number: prNumber,
                                 body: finalComment
                               });
-            }
+                            }
 
-  # --- Job: process-pr-closed (MODIFICADO para filtrar por 'rfc') ---
+  # --- Job: process-pr-closed (Sin cambios) ---
   process-pr-closed:
     if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.base_ref == 'main' && github.event.pull_request.merged == false
     runs-on: ubuntu-latest
@@ -1179,9 +1330,9 @@ jobs:
                   issue_number: issueNum,
                   body: `## ⏪ Reabierto
 
-            El Pull Request #${prNumber} fue cerrado sin merge. El estado del issue vuelve a \`In Progress\`.`
-                            });
-                          }
+              El Pull Request #${prNumber} fue cerrado sin merge. El estado del issue vuelve a \`In Progress\`.`
+                              });
+                            }
             }
             
   # --- Job: process-ccc-commands (Sin cambios) ---
@@ -1295,143 +1446,143 @@ jobs:
                 issue_number: issue.number,
                 body: `## 📚 Ayuda - Formulario CCC
 
-            ### Descripción de campos requeridos:
+              ### Descripción de campos requeridos:
 
-            **Change Type (Tipo de cambio)**
-            - Escribe una de las opciones: \`estandar\`, \`normal\`, o \`emergencia\`.
+              **Change Type (Tipo de cambio)**
+              - Escribe una de las opciones: \`estandar\`, \`normal\`, o \`emergencia\`.
 
-            **Impact (Impacto)**
-            - Describe qué sistemas, usuarios o procesos se verán afectados
-            - Indica el nivel de criticidad (Bajo/Medio/Alto)
-            - Ejemplo: "Afecta a 500 usuarios del módulo de facturación. Criticidad: Alta"
+              **Impact (Impacto)**
+              - Describe qué sistemas, usuarios o procesos se verán afectados
+              - Indica el nivel de criticidad (Bajo/Medio/Alto)
+              - Ejemplo: "Afecta a 500 usuarios del módulo de facturación. Criticidad: Alta"
 
-            **Implementation Plan (Plan de implementación)**
-            - Lista los pasos específicos para implementar el cambio
-            - Incluye recursos necesarios (personas, herramientas)
-            - Especifica duración estimada y ventana de mantenimiento
-            - Ejemplo:
-              1. Backup de base de datos (30 min)
-              2. Deploy de nueva versión (15 min)
-              3. Migración de datos (1 hora)
+              **Implementation Plan (Plan de implementación)**
+              - Lista los pasos específicos para implementar el cambio
+              - Incluye recursos necesarios (personas, herramientas)
+              - Especifica duración estimada y ventana de mantenimiento
+              - Ejemplo:
+                1. Backup de base de datos (30 min)
+                2. Deploy de nueva versión (15 min)
+                3. Migración de datos (1 hora)
 
-            **RollBack Planning (Plan de reversa)**
-            - Describe cómo revertir el cambio si algo sale mal
-            - Incluye comandos o scripts específicos
-            - Indica tiempo estimado de recuperación
-            - Especifica si es completamente reversible
+              **RollBack Planning (Plan de reversa)**
+              - Describe cómo revertir el cambio si algo sale mal
+              - Incluye comandos o scripts específicos
+              - Indica tiempo estimado de recuperación
+              - Especifica si es completamente reversible
 
-            **Test Planning (Plan de pruebas)**
-            - Detalla la estrategia de testing
-            - Lista casos de prueba críticos
-            - Incluye tests unitarios, integración y E2E
-            - Define criterios de éxito
+              **Test Planning (Plan de pruebas)**
+              - Detalla la estrategia de testing
+              - Lista casos de prueba críticos
+              - Incluye tests unitarios, integración y E2E
+              - Define criterios de éxito
 
-            **Approvers (Aprobadores)**
-            - Menciona (@usuario) a todas las personas que deben aprobar
-            - Típicamente: Tech Lead, Product Owner, DevOps
-            - Ejemplo: @tech-lead @product-owner @devops-team
+              **Approvers (Aprobadores)**
+              - Menciona (@usuario) a todas las personas que deben aprobar
+              - Típicamente: Tech Lead, Product Owner, DevOps
+              - Ejemplo: @tech-lead @product-owner @devops-team
 
-            **Start date (Fecha de inicio)**
-            - Fecha en formato YYYY-MM-DD
-            - Ejemplo: 2025-11-15
+              **Start date (Fecha de inicio)**
+              - Fecha en formato YYYY-MM-DD
+              - Ejemplo: 2025-11-15
 
-            **Target date (Fecha objetivo)**
-            - Fecha límite en formato YYYY-MM-DD
-            - Ejemplo: 2025-11-30
+              **Target date (Fecha objetivo)**
+              - Fecha límite en formato YYYY-MM-DD
+              - Ejemplo: 2025-11-30
 
-            ### Comandos disponibles:
-            - \`/verificar\` - Verifica si completaste los campos en el proyecto
-            - \`/actualizar\` - Actualiza el proyecto con info de este issue
-            - \`/ayuda\` - Muestra esta ayuda`
-                          });
-                          return;
-            }
-            
-            if (cmd.startsWith('/verificar')) {
-              const fields = await getFields(projectId);
-              const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
-              
-              const fChangeType = by(['Change Type', 'Tipo de cambio']);
-              const fImpact   = by(['Impact']);
-              const fPlan     = by(['Implementation Plan']);
-              const fRollback = by(['RollBack Planning','Rollback Plan']);
-              const fPruebas  = by(['Test Planning']);
-              const fAprob    = by(['Approvers']);
-              const fStart    = by(['Start date']);
-              const fTarget   = by(['Target date']);
-              
-              const values = await getFieldValues(itemId);
-              function getValue(field){
-                if(!field) return null;
-                const v = values.find(n => norm(n.field?.name) === norm(field.name));
-                if(!v) return null;
-                if ('text' in v) return (v.text||'').trim();
-                if ('date' in v) return (v.date||'').trim();
-                if ('name' in v) return (v.name||'').trim();
-                return null;
-              }
-              
-              const missing = [];
-              const complete = [];
-              
-              const checkField = (field, name) => {
-                const val = getValue(field);
-                if (!val) {
-                  missing.push(name);
-                } else {
-                  complete.push(`${name}: ✅`);
-                }
-              };
-              
-              checkField(fChangeType, 'Change Type');
-              checkField(fImpact, 'Impact');
-              checkField(fPlan, 'Implementation Plan');
-              checkField(fRollback, 'RollBack Planning');
-              checkField(fPruebas, 'Test Planning');
-              checkField(fAprob, 'Approvers');
-              checkField(fStart, 'Start date');
-              checkField(fTarget, 'Target date');
-              
-              if (missing.length === 0) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  body: `## ✅ Verificación Completa
+              ### Comandos disponibles:
+              - \`/verificar\` - Verifica si completaste los campos en el proyecto
+              - \`/actualizar\` - Actualiza el proyecto con info de este issue
+              - \`/ayuda\` - Muestra esta ayuda`
+                            });
+                            return;
+                          }
+                          
+                          if (cmd.startsWith('/verificar')) {
+                            const fields = await getFields(projectId);
+                            const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
+                            
+                            const fChangeType = by(['Change Type', 'Tipo de cambio']);
+                            const fImpact   = by(['Impact']);
+                            const fPlan     = by(['Implementation Plan']);
+                            const fRollback = by(['RollBack Planning','Rollback Plan']);
+                            const fPruebas  = by(['Test Planning']);
+                            const fAprob    = by(['Approvers']);
+                            const fStart    = by(['Start date']);
+                            const fTarget   = by(['Target date']);
+                            
+                            const values = await getFieldValues(itemId);
+                            function getValue(field){
+                              if(!field) return null;
+                              const v = values.find(n => norm(n.field?.name) === norm(field.name));
+                              if(!v) return null;
+                              if ('text' in v) return (v.text||'').trim();
+                              if ('date' in v) return (v.date||'').trim();
+                              if ('name' in v) return (v.name||'').trim();
+                              return null;
+                            }
+                            
+                            const missing = [];
+                            const complete = [];
+                            
+                            const checkField = (field, name) => {
+                              const val = getValue(field);
+                              if (!val) {
+                                missing.push(name);
+                              } else {
+                                complete.push(`${name}: ✅`);
+                              }
+                            };
+                            
+                            checkField(fChangeType, 'Change Type');
+                            checkField(fImpact, 'Impact');
+                            checkField(fPlan, 'Implementation Plan');
+                            checkField(fRollback, 'RollBack Planning');
+                            checkField(fPruebas, 'Test Planning');
+                            checkField(fAprob, 'Approvers');
+                            checkField(fStart, 'Start date');
+                            checkField(fTarget, 'Target date');
+                            
+                            if (missing.length === 0) {
+                              await github.rest.issues.createComment({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: issue.number,
+                                body: `## ✅ Verificación Completa
 
               ¡Excelente! Todos los campos requeridos están completos:
 
               ${complete.map(c => `- ${c}`).join('\n')}
 
               Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
-                              });
-                              
-                              await github.rest.issues.addLabels({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: issue.number,
-                                labels: ['approved']
-                              });
-                            } else {
-                              await github.rest.issues.createComment({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: issue.number,
-                                body: `## ⚠️ Campos Faltantes
+                });
+                
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['approved']
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `## ⚠️ Campos Faltantes
 
-              Aún faltan los siguientes campos en el proyecto:
+            Aún faltan los siguientes campos en el proyecto:
 
-              ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
+            ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
 
-              **[Ir al proyecto para completarlos →](${userProjUrl})**
+            **[Ir al proyecto para completarlos →](${userProjUrl})**
 
-              Los siguientes campos ya están completos:
-              ${complete.map(c => `- ${c}`).join('\n')}
+            Los siguientes campos ya están completos:
+            ${complete.map(c => `- ${c}`).join('\n')}
 
-              Una vez completados, ejecuta \`/verificar\` nuevamente.`
-                              });
-                            }
-                            return;
+            Una vez completados, ejecuta \`/verificar\` nuevamente.`
+                            });
+                          }
+                          return;
             }
             
             if (cmd.startsWith('/actualizar')) {
