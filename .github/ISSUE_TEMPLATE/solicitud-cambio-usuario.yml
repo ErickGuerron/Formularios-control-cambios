@@ -25,14 +25,6 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: fecha_solicitud
-    attributes:
-      label: "Fecha de solicitud *"
-      placeholder: "YYYY-MM-DD"
-    validations:
-      required: true
-
   - type: dropdown
     id: motivo_cambio
     attributes:
