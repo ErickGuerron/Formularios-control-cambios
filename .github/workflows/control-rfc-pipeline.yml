@@ -405,6 +405,7 @@ jobs:
 
             const fields = await getFields(projectId);
             const fStatusCcc = by(fields, ['Status_CCC','Status CCC','status_ccc']);
+            const fChangeType= by(fields, ['Change Type', 'Tipo de cambio']);
             const fImpact    = by(fields, ['Impact']);
             const fPlan      = by(fields, ['Implementation Plan']);
             const fRollback  = by(fields, ['RollBack Planning','Rollback Plan']);
@@ -425,6 +426,7 @@ jobs:
             }
 
             const missing = [];
+            if(!getValue(fChangeType)) missing.push('Change Type (estandar/normal/emergencia)');
             if(!getValue(fImpact))   missing.push('Impact');
             if(!getValue(fPlan))     missing.push('Implementation Plan');
             if(!getValue(fRollback)) missing.push('RollBack Planning');
@@ -502,6 +504,9 @@ jobs:
             <summary><b>📋 Plantilla de información CCC</b> (Click para expandir)</summary>
 
             \`\`\`
+            ### Change Type
+            Tipo de cambio: [ ] estandar [ ] normal [ ] emergencia
+
             ### Impact
             Describe el impacto del cambio:
             - Usuarios afectados: 
@@ -734,7 +739,7 @@ jobs:
                   } }
                 }`, { projectId, q: String(issueNumber) }
               );
-              return r.node.items.nodes.find(n=>n.content?.number===issueNumber)?.id || null;
+              return r?.node?.items?.nodes?.find(n=>n.content?.number===issueNumber)?.id || null;
             }
             
             async function getFields(projectId){
@@ -748,7 +753,7 @@ jobs:
                   } }
                 }`, { projectId }
               );
-              return r.node.fields.nodes;
+              return r?.node?.fields?.nodes || [];
             }
             
             async function getFieldValues(itemId){
@@ -767,7 +772,7 @@ jobs:
                   }
                 }`, { itemId }
               );
-              return r.node.fieldValues.nodes;
+              return r?.node?.fieldValues?.nodes || [];
             }
             
             const projectId = await getUserProjByNum(PN_USER);
@@ -800,6 +805,9 @@ jobs:
                 body: `## 📚 Ayuda - Formulario CCC
 
             ### Descripción de campos requeridos:
+
+            **Change Type (Tipo de cambio)**
+            - Escribe una de las opciones: \`estandar\`, \`normal\`, o \`emergencia\`.
 
             **Impact (Impacto)**
             - Describe qué sistemas, usuarios o procesos se verán afectados
@@ -844,14 +852,15 @@ jobs:
             - \`/verificar\` - Verifica si completaste los campos en el proyecto
             - \`/actualizar\` - Actualiza el proyecto con info de este issue
             - \`/ayuda\` - Muestra esta ayuda`
-              });
-              return;
+                          });
+                          return;
             }
             
             if (cmd.startsWith('/verificar')) {
               const fields = await getFields(projectId);
               const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
               
+              const fChangeType = by(['Change Type', 'Tipo de cambio']);
               const fImpact   = by(['Impact']);
               const fPlan     = by(['Implementation Plan']);
               const fRollback = by(['RollBack Planning','Rollback Plan']);
@@ -883,6 +892,7 @@ jobs:
                 }
               };
               
+              checkField(fChangeType, 'Change Type');
               checkField(fImpact, 'Impact');
               checkField(fPlan, 'Implementation Plan');
               checkField(fRollback, 'RollBack Planning');
@@ -904,20 +914,20 @@ jobs:
 
             Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
                             });
-                    
-                    // Opcional: agregar el label automáticamente
-                    await github.rest.issues.addLabels({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      issue_number: issue.number,
-                      labels: ['approved']
-                      });
-                  } else {
-                    await github.rest.issues.createComment({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      issue_number: issue.number,
-                      body: `## ⚠️ Campos Faltantes
+                            
+                            // Opcional: agregar el label automáticamente
+                            await github.rest.issues.addLabels({
+                              owner: context.repo.owner,
+                              repo: context.repo.repo,
+                              issue_number: issue.number,
+                              labels: ['approved']
+                            });
+                          } else {
+                            await github.rest.issues.createComment({
+                              owner: context.repo.owner,
+                              repo: context.repo.repo,
+                              issue_number: issue.number,
+                              body: `## ⚠️ Campos Faltantes
 
             Aún faltan los siguientes campos en el proyecto:
 
@@ -925,42 +935,62 @@ jobs:
 
             **[Ir al proyecto para completarlos →](${userProjUrl})**
 
-                  Los siguientes campos ya están completos:
-                  ${complete.map(c => `- ${c}`).join('\n')}
+            Los siguientes campos ya están completos:
+            ${complete.map(c => `- ${c}`).join('\n')}
 
             Una vez completados, ejecuta \`/verificar\` nuevamente.`
-                });
-              }
-              return;
-            }
-            
-            if (cmd.startsWith('/actualizar')) {
-              // Parsear información del issue body o comentarios
-              const issueBody = issue.body || '';
-              
-              function extractSection(label) {
-                const patterns = [
-                  new RegExp(`###\\s*${label}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`\\n###|$)`, 'i'),
-                  new RegExp(`\`\`\`[\\s\\S]*?###\\s*${label}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`|$)`, 'i')
-                ];
+                            });
+                          }
+                          return;
+                        }
+                        
+                        if (cmd.startsWith('/actualizar')) {
+                          // Parsear información del issue body o comentarios
+                          const issueBody = issue.body || '';
+                          
+                          // Nueva función "grab" más inteligente
+                          function escRE(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+                          
+                          function grab(label) {
+                            const L = escRE(label);
+                            const patterns = [
+                              // Patrón 1: ### Label ... (termina en ### o fin)
+                              new RegExp(`^###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n$|$)`, 'im'),
+                              // Patrón 2: (dentro de ```) ### Label ... (termina en ### o ```)
+                              new RegExp(`\`\`\`[\\s\\S]*?###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`|$)`, 'i'),
+                              // Patrón 3: **Label (opcional)** ... (termina en ** o ### o fin)
+                              // m[1] será (opcional), m[2] será el contenido
+                              new RegExp(`\\*\\*${L}\\s*(\\([^)]*\\))?\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?=\\n\\*\\*|\\n###|\\n$|$)`, 'i'),
+                              // Patrón 4: (Solo para Change Type) ... Tipo de cambio: [opción]
+                              new RegExp(`(?:\\*\\*${L}\\s*\\(.*?\\)\\*\\*|###\\s*${L})[\\s\\S]*?:\\[?.*?\\]?\\s*(\\w+)`, 'i')
+                            ];
+                
                 for (const re of patterns) {
-                  const m = issueBody.match(re) || comment.match(re);
-                  if (m) return m[1].trim();
+                  let m = comment.match(re);
+                  if (!m) m = issueBody.match(re);
+                  
+                  if (m) {
+                    // Patrón 3 y 4 guardan en m[2] o m[1] (depende), los otros en m[1]
+                    return (m[2] || m[1] || '').trim();
+                  }
                 }
                 return '';
               }
               
-              const impact = extractSection('Impact');
-              const plan = extractSection('Implementation Plan');
-              const rollback = extractSection('RollBack Planning');
-              const testing = extractSection('Test Planning');
-              const approvers = extractSection('Approvers');
-              const startMatch = (issueBody + comment).match(/Start date[:\s]+(\d{4}-\d{2}-\d{2})/i);
-              const targetMatch = (issueBody + comment).match(/Target date[:\s]+(\d{4}-\d{2}-\d{2})/i);
+              const changeType = grab('Change Type') || grab('Tipo de cambio');
+              const impact = grab('Impact');
+              const plan = grab('Implementation Plan');
+              const rollback = grab('RollBack Planning');
+              const testing = grab('Test Planning');
+              const approvers = grab('Approvers');
+              
+              const startMatch = (issueBody + comment).match(/(?:Start date|Fecha de inicio)[:\s]+(\d{4}-\d{2}-\d{2})/i);
+              const targetMatch = (issueBody + comment).match(/(?:Target date|Fecha objetivo)[:\s]+(\d{4}-\d{2}-\d{2})/i);
               
               const fields = await getFields(projectId);
               const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
               
+              const fChangeType = by(['Change Type', 'Tipo de cambio']);
               const fImpact   = by(['Impact']);
               const fPlan     = by(['Implementation Plan']);
               const fRollback = by(['RollBack Planning','Rollback Plan']);
@@ -988,8 +1018,26 @@ jobs:
                 );
                 return true;
               };
+
+              // Nueva función setSelect
+              async function setSelect(field,optName){
+                if(!field || !optName) return false;
+                const opts = field.options || [];
+                const wanted = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)));
+                if(!wanted) {
+                  console.log(`Opción "${optName}" no encontrada para el campo "${field.name}"`);
+                  return false;
+                }
+                await github.graphql(
+                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                  }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+                );
+                return true;
+              }
               
               const updated = [];
+              if (await setSelect(fChangeType, changeType)) updated.push('Change Type');
               if (await setText(fImpact?.id, impact)) updated.push('Impact');
               if (await setText(fPlan?.id, plan)) updated.push('Implementation Plan');
               if (await setText(fRollback?.id, rollback)) updated.push('RollBack Planning');
@@ -1005,25 +1053,25 @@ jobs:
                   issue_number: issue.number,
                   body: `## ✅ Proyecto Actualizado
 
-            Se actualizaron los siguientes campos en el proyecto:
+              Se actualizaron los siguientes campos en el proyecto desde tu comentario:
 
-            ${updated.map(u => `- ✅ ${u}`).join('\n')}
+              ${updated.map(u => `- ✅ ${u}`).join('\n')}
 
-            **[Ver en el proyecto →](${userProjUrl})**
+              **[Ver en el proyecto →](${userProjUrl})**
 
-            Ejecuta \`/verificar\` para confirmar que todo esté completo.`
-                            });
-                          } else {
-                            await github.rest.issues.createComment({
-                              owner: context.repo.owner,
-                              repo: context.repo.repo,
-                              issue_number: issue.number,
-                              body: `## ⚠️ No se encontró información para actualizar
+              Ejecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`
+                              });
+                            } else {
+                              await github.rest.issues.createComment({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: issue.number,
+                                body: `## ⚠️ No se encontró información para actualizar
 
-            Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
+              Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
 
-            Usa \`/ayuda\` para ver cómo llenar correctamente cada campo.`
-                });
+              **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`
+                              });
               }
             }
 
@@ -1080,7 +1128,7 @@ jobs:
 
             const fields = await github.graphql(
               `query($projectId:ID!){
-                node(id:$projectId){ ... on ProjectVV2 {
+                node(id:$projectId){ ... on ProjectV2 {
                   fields(first:50){ nodes{
                     ... on ProjectV2FieldCommon { id name }
                     ... on ProjectV2SingleSelectField { id name options{ id name } }
