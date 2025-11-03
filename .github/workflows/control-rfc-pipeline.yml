@@ -184,6 +184,7 @@ jobs:
               ).catch(()=>null)
               return r?.node?.fields?.nodes || []
             }
+
             const setSelect = async(projectId,itemId,field,optName)=>{
               if(!projectId || !itemId || !field || !optName) return
               const opts = field.options || []
@@ -213,6 +214,7 @@ jobs:
             }
             const toDateOnly = (s) => (s && (s.match(/(\d{4}-\d{2}-\d{2})/)||[])[1]) || ''
 
+            // === Valores básicos (para el Project principal) ya estaban:
             const vImpacto  = grab('Impacto') || grab('Impact')
             const vPlan     = grab('Plan de implementación') || grab('Implementation Plan')
             const vRollback = grab('Plan de reversa \\(rollback\\)') || grab('RollBack Planning') || grab('Rollback Plan')
@@ -223,6 +225,7 @@ jobs:
             const vSolic    = grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester')
             const vPriority = grab('priorityname') || grab('Priority') || tipo
 
+            // === BLOQUE USUARIOS INTEGRADO + CHECK PREVIO ===
             if (hasUserLabel) {
               const projectIdUser = await findProjectV2User()
               if (!projectIdUser) { console.log('Project usuarios no encontrado o sin permisos'); return }
@@ -231,36 +234,104 @@ jobs:
               const fieldsUser = await getFields(projectIdUser)
               const byU = (names)=> names.map(n=>fieldsUser.find(f=>norm(f?.name)===norm(n))).find(Boolean)
 
-              const fStatusU     = byU(['Status'])
-              const fStatusCccU  = byU(['Status_CCC','Status CCC','status_ccc'])
-              const fChangeTypeU = byU(['Change Type'])
-              const fRiesgoU     = byU(['Risk','Riesgo'])
-              const fImpactoU    = byU(['Impact','Impacto'])
-              const fPlanU       = byU(['Implementation Plan','Plan de implementación'])
-              const fRollbackU   = byU(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
-              const fPruebasU    = byU(['Test Planning','Plan de pruebas'])
-              const fAprobU      = byU(['Approvers'])
-              const fSolicU      = byU(['Solicitor','Solicitante','Applicant','Requester'])
-              const fStartU      = byU(['Start date','Init'])
-              const fTargetU     = byU(['Target date','Completion'])
+              const fStatusU      = byU(['Status'])
+              const fStatusCccU   = byU(['Status_CCC','Status CCC','status_ccc'])
+              const fChangeTypeU  = byU(['Change Type'])
+              const fReasonSSU    = byU(['Reason for change'])
+              const fSolicU       = byU(['Solicitor','Solicitante'])
+              const fDeptU        = byU(['Department','Área / Departamento'])
+              const fEmailU       = byU(['Contact Email','Correo de contacto'])
+              const fDateAppU     = byU(['Date of application','Fecha de solicitud'])
+              const fDescReqU     = byU(['Description of the request','Descripción del cambio solicitado'])
+              const fExplainU     = byU(['Explanation of the reason','Motivo del cambio'])
+              const fNotesU       = byU(['Additional comments','Observaciones adicionales'])
+
+              const fRiesgoU      = byU(['Risk','Riesgo'])
+              const fImpactoU     = byU(['Impact','Impacto'])
+              const fPlanU        = byU(['Implementation Plan','Plan de implementación'])
+              const fRollbackU    = byU(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
+              const fPruebasU     = byU(['Test Planning','Plan de pruebas'])
+              const fAprobU       = byU(['Approvers'])
+              const fStartU       = byU(['Start date','Init'])
+              const fTargetU      = byU(['Target date','Completion'])
+
+              const vSolicU      = grab('Nombre del solicitante') || grab('Solicitante') || grab('Solicitor')
+              const vDeptU       = grab('Área / Departamento')    || grab('Department')
+              const vEmailU      = grab('Correo de contacto')     || grab('Contact Email')
+              const vDateAppU    = grab('Fecha de solicitud')     || grab('Date of application')
+              const vDescReqU    = grab('Descripción del cambio solicitado') || grab('Description of the request')
+              const vExplainU    = grab('Motivo del cambio')      || grab('Explanation of the reason')
+              const vNotesU      = grab('Observaciones adicionales') || grab('Additional comments')
+
+              const vMotivoSel   = grab('Motivo de cambio')       || grab('Reason for change')
+              const vPriorityU   = grab('Prioridad')              || grab('priorityname') || grab('Priority')
+
+              const vRiesgoSel   = (grab('Riesgo') || '').toLowerCase()
+              const vImpactoU    = grab('Impacto') || grab('Impact')
+              const vPlanTxtU    = grab('Plan de implementación') || grab('Implementation Plan')
+              const vRollbackU   = grab('Plan de reversa \\(rollback\\)') || grab('RollBack Planning') || grab('Rollback Plan')
+              const vPruebasU    = grab('Plan de pruebas') || grab('Test Planning')
+              const vAprobU      = grab('Aprobadores requeridos') || grab('Approvers')
+              const vVIniU       = grab('Fecha de solicitud') || grab('Init')
+              const vVFinU       = grab('desiredDate') || grab('Completion') || grab('Target date')
+
+              function mapReason(val) {
+                const v = norm(val)
+                if (['correccion','corrección','error','bug','fallo','fix','bugfix'].some(s=>v.includes(s))) return 'error correction'
+                if (['mejora','funcional','feature','implementacion','implementación','funcion'].some(s=>v.includes(s))) return 'functional improvement'
+                if (['cosmetico','cosmético','ui','visual','ux','apariencia'].some(s=>v.includes(s))) return 'cosmetic change'
+                return 'other'
+              }
+
+              // --- Verificación previa (logs) ---
+              const hasSelectOption = (field, val) => !!(field?.options || []).find(o => {
+                const n = norm(o.name)
+                const v = norm(val || '')
+                return n === v || n.includes(v)
+              })
+              const checks = []
+              const pushCheck = (ok, msg) => console.log(`[MapCheck] ${ok ? 'OK' : 'WARN'} - ${msg}`)
+
+              pushCheck(!!fChangeTypeU, 'Field Change Type presente')
+              if (fChangeTypeU) pushCheck(hasSelectOption(fChangeTypeU, vPriorityU), `Opción Change Type "${vPriorityU}" existe`)
+              pushCheck(!!fReasonSSU, 'Field Reason for change presente')
+              if (fReasonSSU) pushCheck(hasSelectOption(fReasonSSU, mapReason(vMotivoSel)), `Opción Reason for change "${mapReason(vMotivoSel)}" existe`)
+              if (fDateAppU) {
+                const ymd = toDateOnly(vDateAppU)
+                pushCheck(!!ymd, `Fecha válida Date of application extraída: "${ymd || 'N/A'}"`)
+              }
+              if (fStartU)  pushCheck(!!toDateOnly(vVIniU),  `Fecha válida Start date: "${toDateOnly(vVIniU) || 'N/A'}"`)
+              if (fTargetU) pushCheck(!!toDateOnly(vVFinU),  `Fecha válida Target date: "${toDateOnly(vVFinU) || 'N/A'}"`)
 
               if (context.payload.action === 'opened') {
                 await setSelect(projectIdUser, itemIdUser, fStatusU, 'Backlog')
                 await setSelect(projectIdUser, itemIdUser, fStatusCccU, 'Inbox')
               }
-              await setSelect(projectIdUser, itemIdUser, fChangeTypeU, vPriority)
-              await setSelect(projectIdUser, itemIdUser, fRiesgoU, riesgo)
-              await setText  (projectIdUser, itemIdUser, fImpactoU?.id, vImpacto)
-              await setText  (projectIdUser, itemIdUser, fPlanU?.id,    vPlan)
-              await setText  (projectIdUser, itemIdUser, fRollbackU?.id, vRollback)
-              await setText  (projectIdUser, itemIdUser, fPruebasU?.id, vPruebas)
-              await setText  (projectIdUser, itemIdUser, fAprobU?.id,   vAprob)
-              await setDate  (projectIdUser, itemIdUser, fStartU?.id,   toDateOnly(vVIni))
-              await setDate  (projectIdUser, itemIdUser, fTargetU?.id,  toDateOnly(vVFin))
-              await setText  (projectIdUser, itemIdUser, fSolicU?.id,   vSolic)
+
+              // --- Mapeo al Project de Usuarios ---
+              await setSelect(projectIdUser, itemIdUser, fChangeTypeU, vPriorityU)
+              await setSelect(projectIdUser, itemIdUser, fReasonSSU,  mapReason(vMotivoSel))
+
+              await setText(projectIdUser, itemIdUser, fSolicU?.id,   vSolicU)
+              await setText(projectIdUser, itemIdUser, fDeptU?.id,    vDeptU)
+              await setText(projectIdUser, itemIdUser, fEmailU?.id,   vEmailU)
+              await setDate(projectIdUser, itemIdUser, fDateAppU?.id, toDateOnly(vDateAppU))
+              await setText(projectIdUser, itemIdUser, fDescReqU?.id, vDescReqU)
+              await setText(projectIdUser, itemIdUser, fExplainU?.id, vExplainU)
+              await setText(projectIdUser, itemIdUser, fNotesU?.id,   vNotesU)
+
+              await setSelect(projectIdUser, itemIdUser, fRiesgoU, vRiesgoSel)
+              await setText  (projectIdUser, itemIdUser, fImpactoU?.id, vImpactoU)
+              await setText  (projectIdUser, itemIdUser, fPlanU?.id,    vPlanTxtU)
+              await setText  (projectIdUser, itemIdUser, fRollbackU?.id, vRollbackU)
+              await setText  (projectIdUser, itemIdUser, fPruebasU?.id, vPruebasU)
+              await setText  (projectIdUser, itemIdUser, fAprobU?.id,   vAprobU)
+              await setDate  (projectIdUser, itemIdUser, fStartU?.id,   toDateOnly(vVIniU))
+              await setDate  (projectIdUser, itemIdUser, fTargetU?.id,  toDateOnly(vVFinU))
               return
             }
 
+            // === Project principal (sin etiqueta user) ===
             const projectIdMain = await findProjectV2Main()
             if (!projectIdMain) { console.log('Project principal no encontrado o sin permisos'); return }
             const itemIdMain = await ensureItem(projectIdMain)
