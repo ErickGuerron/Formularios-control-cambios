@@ -38,18 +38,21 @@ jobs:
             const body = issue.body || ''
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
 
+            function escRE(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
             const grab = (label) => {
+              const L = escRE(label)
               const variants = [
-                new RegExp(`\\*\\*${label}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?:\\n\\*\\*|\\n###|$)`, 'i'),
-                new RegExp(`^###\\s*${label}\\s*\\n+([\\s\\S]*?)(?:\\n###|$)`, 'im'),
-                new RegExp(`^${label}\\s*:\\s*(.+)$`, 'im')
-              ];
-              for (const re of variants) { const m = body.match(re); if (m) return m[1].trim(); }
-              return '';
+                new RegExp(`^###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n$|$)`, 'im'),
+                new RegExp(`\\*\\*${L}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?=\\n\\*\\*|\\n###|\\n$|$)`, 'i'),
+                new RegExp(`^${L}\\s*:\\s*(.+)$`, 'im')
+              ]
+              for (const re of variants){ const m = body.match(re); if(m) return m[1].trim() }
+              return ''
             }
 
             const tipo   = (grab('Tipo de cambio') || '').toLowerCase()
             const riesgo = (grab('Riesgo') || '').toLowerCase()
+
             const wanted = new Set(['rfc'])
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
             if (tipo.includes('normal'))                                 wanted.add('tipo:normal')
@@ -188,7 +191,6 @@ jobs:
               ).catch(()=>null)
             }
 
-            // ================== USUARIOS ==================
             if (hasUserLabel) {
               const projectIdUser = await findProjectV2User()
               if (!projectIdUser) { console.log('Project usuarios no encontrado o sin permisos'); return }
@@ -208,20 +210,23 @@ jobs:
               const fStatusCccU = byU(['Status_CCC','Status CCC','status_ccc'])
               const fReasonU    = byU(['Reason for change','Motivo de cambio'])
               const fRiskU      = byU(['Risk','Riesgo'])
-              const fSolicU     = byU(['Solicitor','Solicitante'])
+              const fSolicU     = byU(['Solicitor'])
               const fDeptU      = byU(['Department','Área / Departamento','Area / Departamento'])
-              const fEmailU     = byU(['Contact Email','Correo de contacto'])
-              const fDateAppU   = byU(['Date of application','Fecha de solicitud'])
-              const fDescU      = byU(['Description of the requested change','Description of the request','Descripción del cambio solicitado','Descripcion del cambio'])
-              const fExplU      = byU(['Explanation of the reason for the change','Explanation of the reason','Motivo del cambio','Explicacion del motivo'])
+              const fEmailU     = byU(['Contact Email'])
+              const fDateAppU   = byU(['Date of application'])
+              const fDescU      = byU(['Description of the requested change','Description of the request','Descripción del cambio solicitado'])
+              const fExplU      = byU(['Explanation of the reason for the change','Explanation of the reason','Motivo del cambio'])
               const fNotesU     = byU(['Additional comments','Observaciones adicionales'])
 
               const vDept   = grab('Área / Departamento') || grab('Department')
-              const vReason = grab('Reason for change') || grab('Motivo de cambio')
+              const vReason = grab('Reason for change')   || grab('Motivo de cambio')
               const vPrior  = grab('Prioridad') || grab('priorityname') || grab('Priority') || ''
-              const vDesc   = grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request')
-              const vExpl   = grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason')
+              let   vDesc   = grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request')
+              let   vExpl   = grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason')
               const vNotes  = grab('Observaciones adicionales') || grab('Additional comments')
+
+              if(!vDesc) vDesc = (grab('Descripción del cambio') || '').trim()
+              if(!vExpl) vExpl = (grab('Explicación del motivo') || '').trim()
 
               const authorLogin = issue.user?.login || context.actor
               const authorInfo  = await github.graphql(
@@ -231,12 +236,17 @@ jobs:
               const authorName  = (authorInfo?.user?.name || authorLogin).trim()
               const authorEmail = (authorInfo?.user?.email || `${authorLogin}@users.noreply.github.com`).trim()
 
-              function mapPriorityToRisk(p){
-                const v = norm(p)
-                if (/(crit|urg|alto|alta|high)/.test(v))   return 'High'
-                if (/(med|medio|media|medium|normal)/.test(v)) return 'Medium'
-                if (/(baj|baja|low)/.test(v))              return 'Low'
-                return 'Medium'
+              function pickRiskFromPriority(priority, riskField){
+                const opts = (riskField?.options || []).map(o => o.name)
+                const names = opts.map(n => norm(n))
+                const high  = opts[names.findIndex(n => /high|alto/.test(n))]   ?? opts.find(o=>/high|alto/i.test(o))   ?? 'High'
+                const med   = opts[names.findIndex(n => /medium|medio/.test(n))]?? opts.find(o=>/medium|medio/i.test(o))?? 'Medium'
+                const low   = opts[names.findIndex(n => /low|bajo/.test(n))]    ?? opts.find(o=>/low|bajo/i.test(o))    ?? 'Low'
+                const v = norm(priority)
+                if (/(crit|urg|alta|alto|high)/.test(v))   return high
+                if (/(med|medio|media|medium|normal)/.test(v)) return med
+                if (/(baj|baja|low)/.test(v))              return low
+                return med
               }
 
               if (context.payload.action === 'opened') {
@@ -247,8 +257,9 @@ jobs:
               await setText (projectIdUser, itemIdUser, fSolicU?.id,   authorName)
               await setText (projectIdUser, itemIdUser, fEmailU?.id,   authorEmail)
               await setDate (projectIdUser, itemIdUser, fDateAppU?.id, new Date().toISOString().slice(0,10))
+
               await setSelect(projectIdUser, itemIdUser, fReasonU,     vReason)
-              await setSelect(projectIdUser, itemIdUser, fRiskU,       mapPriorityToRisk(vPrior))
+              await setSelect(projectIdUser, itemIdUser, fRiskU,       pickRiskFromPriority(vPrior, fRiskU))
               await setText (projectIdUser, itemIdUser, fDeptU?.id,    vDept)
               await setText (projectIdUser, itemIdUser, fDescU?.id,    vDesc)
               await setText (projectIdUser, itemIdUser, fExplU?.id,    vExpl)
@@ -257,7 +268,6 @@ jobs:
               return
             }
 
-            // ================== PRINCIPAL (no user) ==================
             const projectIdMain = await findProjectV2Main()
             if (!projectIdMain) { console.log('Project principal no encontrado o sin permisos'); return }
             const itemIdMain = await ensureItem(projectIdMain)
@@ -292,7 +302,9 @@ jobs:
             await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'))
 
   enforce-user-post-approve:
-    if: github.event.action == 'labeled' && github.event.label.name == 'approved'
+    if: >
+      github.event.action == 'labeled' &&
+      contains(fromJSON('["approved","Approved","aprobado","Aprobado"]'), github.event.label.name)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -412,7 +424,7 @@ jobs:
                 owner: context.repo.owner,
                 repo:  context.repo.repo,
                 issue_number: issue.number,
-                body: `### ✅ Datos adicionales necesarios antes de continuar\nSe detectó aprobación (**user**), pero faltan:\n\n${list}\n\nSe revirtió el estado a **Inbox**. Completa los campos en el Project y vuelve a etiquetar **approved**.`
+                body: `### Datos adicionales requeridos\nSe detectó **Approved** (USER), pero faltan:\n\n${list}\n\nSe revirtió **Status_CCC → Inbox**. Completa esos campos en el Project y vuelve a etiquetar **approved**.`
               })
               return
             }
