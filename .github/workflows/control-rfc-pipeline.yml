@@ -221,8 +221,8 @@ jobs:
               const vDept   = grab('Área / Departamento') || grab('Department')
               const vReason = grab('Reason for change')   || grab('Motivo de cambio')
               const vPrior  = grab('Prioridad') || grab('priorityname') || grab('Priority') || ''
-              let   vDesc   = grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request')
-              let   vExpl   = grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason')
+              let   vDesc   = grab('Descripción del cambio solicitado *') || grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request')
+              let   vExpl   = grab('Motivo del cambio *') || grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason')
               const vNotes  = grab('Observaciones adicionales') || grab('Additional comments')
 
               if(!vDesc) vDesc = (grab('Descripción del cambio') || '').trim()
@@ -245,7 +245,7 @@ jobs:
                 const v = norm(priority)
                 if (/(crit|urg|alta|alto|high)/.test(v))   return high
                 if (/(med|medio|media|medium|normal)/.test(v)) return med
-                if (/(baj|baja|low)/.test(v))              return low
+                if (/(baj|baja|low)/.test(v))               return low
                 return med
               }
 
@@ -258,8 +258,8 @@ jobs:
               await setText (projectIdUser, itemIdUser, fEmailU?.id,   authorEmail)
               await setDate (projectIdUser, itemIdUser, fDateAppU?.id, new Date().toISOString().slice(0,10))
 
-              await setSelect(projectIdUser, itemIdUser, fReasonU,     vReason)
-              await setSelect(projectIdUser, itemIdUser, fRiskU,       pickRiskFromPriority(vPrior, fRiskU))
+              await setSelect(projectIdUser, itemIdUser, fReasonU,    vReason)
+              await setSelect(projectIdUser, itemIdUser, fRiskU,      pickRiskFromPriority(vPrior, fRiskU))
               await setText (projectIdUser, itemIdUser, fDeptU?.id,    vDept)
               await setText (projectIdUser, itemIdUser, fDescU?.id,    vDesc)
               await setText (projectIdUser, itemIdUser, fExplU?.id,    vExpl)
