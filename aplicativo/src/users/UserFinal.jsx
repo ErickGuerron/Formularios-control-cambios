@@ -1,24 +1,22 @@
-/* eslint-disable no-unused-vars */
 import { useState } from "react";
 import "../App.css";
+import Notification from "./../components/Notification.jsx";
 
 export default function App() {
   const [form, setForm] = useState({
-    title: "",
     formName: "",
     requesterName: "",
     department: "",
     email: "",
-    requestDate: "",
     changeType: "",
     description: "",
     reason: "",
     priority: "Media",
-    desiredDate: "",
     notes: "",
   });
 
   const [submitting, setSubmitting] = useState(false);
+  const [notification, setNotification] = useState(null);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -27,29 +25,34 @@ export default function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setNotification(null);
 
-    const requeridos = ["title","formName","requesterName","email","requestDate","changeType","description","reason","priority"];
+    const requeridos = ["formName","requesterName","email","changeType","description","reason","priority"];
     const vacios = requeridos.filter((k) => !String(form[k]).trim());
     if (vacios.length) {
-      alert("Por favor completa los campos obligatorios marcados con *.");
+      setNotification({
+        message: "Por favor completa los campos obligatorios marcados con *.",
+        type: "error"
+      });
       return;
     }
 
+    // --- INICIO DE LA CORRECCIÓN ---
     const payload = {
-      title: form.title,
+      title: form.formName, // 1. Usa formName como el 'title' requerido
       formName: form.formName,
       requesterName: form.requesterName,
       department: form.department || null,
       email: form.email,
-      requestDate: form.requestDate,
+      requestDate: new Date().toISOString().split('T')[0],
       changeType: form.changeType,
       description: form.description,
       reason: form.reason,
-      priority: form.priority,         // Se mapeará a Change Type vía priorityname
-      desiredDate: form.desiredDate || null,
+      priorityName: form.priority, // 2. Renombra 'priority' a 'priorityName'
       notes: form.notes || null,
-      assignees: [],                   // opcional: respeta el máximo de 2 en backend
+      assignees: [],
     };
+    // --- FIN DE LA CORRECCIÓN ---
 
     try {
       setSubmitting(true);
@@ -65,23 +68,13 @@ export default function App() {
       }
 
       const data = await res.json();
-      alert(`Solicitud creada ✅ Issue #${data.issueNumber}`);
-      setForm({
-        title: "",
-        formName: "",
-        requesterName: "",
-        department: "",
-        email: "",
-        requestDate: "",
-        changeType: "",
-        description: "",
-        reason: "",
-        priority: "Media",
-        desiredDate: "",
-        notes: "",
+      setNotification({
+        message: `Solicitud creada ✅ Issue #${data.issueNumber}`,
+        type: "success"
       });
+      handleReset();
     } catch (e) {
-      alert(e.message);
+      setNotification({ message: e.message, type: "error" });
     } finally {
       setSubmitting(false);
     }
@@ -89,19 +82,17 @@ export default function App() {
 
   const handleReset = () => {
     setForm({
-      title: "",
       formName: "",
       requesterName: "",
       department: "",
       email: "",
-      requestDate: "",
       changeType: "",
       description: "",
       reason: "",
       priority: "Media",
-      desiredDate: "",
       notes: "",
     });
+    setNotification(null);
   };
 
   return (
@@ -110,32 +101,27 @@ export default function App() {
         <h2>Solicitud de Cambio de Software (Usuario Final)</h2>
 
         <form className="vertical-card" onSubmit={handleSubmit}>
-          <div className="field-inline">
-            <div className="field">
-              <label htmlFor="title">Título de la solicitud *</label>
-              <input
-                id="title"
-                name="title"
-                type="text"
-                placeholder="Ej. Mejorar búsqueda de productos"
-                value={form.title}
-                onChange={handleChange}
-                required
-              />
-            </div>
-
-            <div className="field">
-              <label htmlFor="formName">Nombre del formulario *</label>
-              <input
-                id="formName"
-                name="formName"
-                type="text"
-                placeholder="Ej. Formulario de Solicitud de Usuario"
-                value={form.formName}
-                onChange={handleChange}
-                required
-              />
-            </div>
+          
+          {notification && (
+            <Notification
+              message={notification.message}
+              type={notification.type}
+              onClose={() => setNotification(null)}
+            />
+          )}
+          
+          <div className="field">
+            <label htmlFor="formName">Nombre del formulario *</label>
+            <input
+              id="formName"
+              name="formName"
+              type="text"
+              placeholder="Ej. Formulario de SolicBaja"
+              value={form.formName}
+              onChange={handleChange}
+              required
+              maxLength={40}
+            />
           </div>
 
           <div className="field-inline">
@@ -174,31 +160,6 @@ export default function App() {
                 value={form.email}
                 onChange={handleChange}
                 required
-              />
-            </div>
-          </div>
-
-          <div className="field-inline">
-            <div className="field">
-              <label htmlFor="requestDate">Fecha de solicitud *</label>
-              <input
-                id="requestDate"
-                name="requestDate"
-                type="date"
-                value={form.requestDate}
-                onChange={handleChange}
-                required
-              />
-            </div>
-
-            <div className="field">
-              <label htmlFor="desiredDate">Fecha deseada</label>
-              <input
-                id="desiredDate"
-                name="desiredDate"
-                type="date"
-                value={form.desiredDate}
-                onChange={handleChange}
               />
             </div>
           </div>
