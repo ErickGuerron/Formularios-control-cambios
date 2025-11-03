@@ -307,7 +307,7 @@ jobs:
             await setText  (projectIdMain, itemIdMain, fAprobM?.id,   grab('Aprobadores requeridos') || grab('Approvers'));
             await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'));
 
-  # --- RENOMBRADO: Ahora solo se ejecuta para issues con etiqueta 'user' ---
+  # --- Job: process-user-approval (Solo para 'user') ---
   process-user-approval:
     if: |
       github.event_name == 'issues' &&
@@ -692,7 +692,7 @@ jobs:
             Puedes proceder con la implementación según el plan establecido.`
                         });
 
-  # --- NUEVO JOB: Para issues 'rfc' SIN etiqueta 'user' ---
+  # --- Job: process-rfc-approval (Solo para 'rfc' sin 'user') ---
   process-rfc-approval:
     if: |
       github.event_name == 'issues' &&
@@ -775,7 +775,6 @@ jobs:
               return;
             }
             
-            // Re-abrir el issue si estaba cerrado
             if (issue.state === 'closed') {
               console.log('El issue estaba cerrado. Reabriendo.');
               await github.rest.issues.update({
@@ -826,7 +825,7 @@ jobs:
             **Fecha:** ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`
                         });
 
-  # --- Job: process-denial (ACTUALIZADO para manejar 'rfc' y 'user') ---
+  # --- Job: process-denial (ACTUALIZADO para 'rfc' y 'user') ---
   process-denial:
     if: |
       github.event_name == 'issues' &&
@@ -976,12 +975,12 @@ jobs:
               **Estado CCC:** Denied`
                           });
 
-  # --- Job: process-pr-link (ACTUALIZADO con comentarios en PR para issues cerrados) ---
+  # --- Job: process-pr-link (ACTUALIZADO para bloquear PRs) ---
   process-pr-link:
     if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'edited' || github.event.action == 'synchronize') && github.base_ref == 'main'
     runs-on: ubuntu-latest
     steps:
-      - name: Set Issue Status to In Review
+      - name: Validate PR for RFC Process
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
@@ -993,17 +992,23 @@ jobs:
             const content = prBody + ' ' + prTitle;
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
             
-            const issueRegex = /(?:closes|fixes|resolves) #(\d+)|#(\d+)/gi;
-            let match;
-            const issueNumbers = new Set();
+            const allIssuesRegex = /#(\d+)/gi;
+            const closingRegex = /(?:closes|fixes|resolves) #(\d+)/gi;
             
-            while ((match = issueRegex.exec(content)) !== null) {
-              issueNumbers.add(match[1] || match[2]);
+            let match;
+            const allIssueNumbers = new Set();
+            const closingNumbers = new Set();
+            
+            while ((match = allIssuesRegex.exec(content)) !== null) {
+              allIssueNumbers.add(match[1]);
+            }
+            while ((match = closingRegex.exec(content)) !== null) {
+              closingNumbers.add(match[1]);
             }
             
-            if (issueNumbers.size === 0) {
-              console.log('PR no linkea a ningun issue.');
-              return;
+            if (allIssueNumbers.size === 0) {
+              console.log('PR no linkea a ningun issue. Pasando.');
+              return; // Es un PR sin issues, es válido (ej. un typo)
             }
             
             const USER_LOGIN = process.env.USER_LOGIN;
@@ -1072,8 +1077,10 @@ jobs:
             }
             
             const prComments = new Map();
+            let didFail = false;
+            let hasOpenRfc = false;
 
-            for (const issueNum of issueNumbers) {
+            for (const issueNum of allIssueNumbers) {
               console.log(`Procesando issue #${issueNum}`);
               
               let issue;
@@ -1090,9 +1097,11 @@ jobs:
               
               const hasRfc = (issue.data.labels || []).some(l => norm(l.name) === 'rfc');
               if (!hasRfc) {
-                console.log(`Issue #${issueNum} no tiene la etiqueta 'rfc'. Saltando.`);
+                console.log(`Issue #${issueNum} no es 'rfc'. Saltando.`);
                 continue;
               }
+              
+              // --- Es un issue RFC ---
 
               if (issue.data.state !== 'open') {
                 console.log(`Issue #${issueNum} ya está cerrado. Verificando motivo...`);
@@ -1113,22 +1122,35 @@ jobs:
                   prComments.set(commentBody, true);
                 }
                 
+                continue; // No es un error, solo informativo
+              }
+              
+              // --- Es un RFC abierto ---
+              hasOpenRfc = true; 
+              
+              if (!closingNumbers.has(issueNum)) {
+                // ¡Error! Es un RFC abierto pero no se está cerrando
+                const commentBody = `❌ **ACCIÓN REQUERIDA:** El Issue RFC #${issueNum} está abierto y debe cerrarse con este PR.\n\nPor favor, edita la descripción de este PR y añade una palabra clave como \`closes #${issueNum}\`, \`fixes #${issueNum}\`, o \`resolves #${issueNum}\` para continuar.`;
+                if (!prComments.has(commentBody)) {
+                  prComments.set(commentBody, true);
+                  core.setFailed(`El Issue RFC #${issueNum} debe tener una palabra clave de cierre.`);
+                  didFail = true;
+                }
                 continue;
               }
               
+              // --- Es un RFC abierto y se está cerrando (Golden Path) ---
               const hasUser = (issue.data.labels || []).some(l => norm(l.name) === 'user');
               
               let projectId = null;
               if (hasUser) {
                 projectId = await getUserProjByNum(PN_USER);
-                console.log(`Issue #${issueNum} es de 'user'. Buscando en proyecto USER.`);
               } else {
                 projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
-                console.log(`Issue #${issueNum} es un RFC normal. Buscando en proyecto MAIN/ORG.`);
               }
               
               if(!projectId) {
-                console.log(`No se pudo encontrar un ID de proyecto (MAIN o USER) para issue #${issueNum}.`);
+                console.log(`No se pudo encontrar proyecto para issue #${issueNum}.`);
                 continue;
               }
 
@@ -1142,7 +1164,7 @@ jobs:
               const fStatus = allFields.find(f => norm(f?.name) === 'status');
               
               if (!fStatus) {
-                console.log(`Campo "Status" no encontrado en el proyecto (ID: ${projectId}).`);
+                console.log(`Campo "Status" no encontrado en el proyecto para #${issueNum}.`);
                 continue;
               }
               
@@ -1155,22 +1177,36 @@ jobs:
                   issue_number: issueNum,
                   body: `## 🔄 En Revisión
 
-                El estado ha sido actualizado a \`In Review\` debido al Pull Request #${prNumber}.`
-                                });
-                              }
-                            }
-                            
-                            if (prComments.size > 0) {
-                              const finalComment = Array.from(prComments.keys()).join('\n\n');
-                              await github.rest.issues.createComment({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: prNumber,
-                                body: finalComment
-                              });
-                            }
+            El estado ha sido actualizado a \`In Review\` debido al Pull Request #${prNumber}.`
+                            });
+                          }
+                        }
+                        
+                        // --- Post-Loop ---
+                        
+                        if (prComments.size > 0) {
+                          const finalComment = Array.from(prComments.keys()).join('\n\n---\n');
+                          await github.rest.issues.createComment({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            issue_number: prNumber,
+                            body: finalComment
+                          });
+                        }
 
-  # --- Job: process-pr-closed (Sin cambios) ---
+                        if (didFail) {
+                          // Si fallamos, aseguramos que el mensaje de error principal esté claro.
+                          core.setFailed('Este PR no cumple con las reglas de vinculación de issues RFC. Revisa los comentarios del bot.');
+                          return;
+                        }
+                        
+                        if (hasOpenRfc) {
+                          console.log('Todos los RFCs abiertos fueron procesados. Job exitoso.');
+                        } else {
+                          console.log('PR no linkea a ningún RFC abierto. Pasando.');
+                        }
+
+  # --- Job: process-pr-closed (PR Rechazado) ---
   process-pr-closed:
     if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.base_ref == 'main' && github.event.pull_request.merged == false
     runs-on: ubuntu-latest
@@ -1335,6 +1371,87 @@ jobs:
                             }
             }
             
+  # --- Job: process-pr-merged (PR Aprobado) ---
+  process-pr-merged:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.base_ref == 'main' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close Linked Issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const pr = context.payload.pull_request;
+            const prBody = pr.body || '';
+            const prTitle = pr.title || '';
+            const prNumber = pr.number;
+            const content = prBody + ' ' + prTitle;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            const issueRegex = /#(\d+)/gi;
+            let match;
+            const issueNumbers = new Set();
+            
+            while ((match = issueRegex.exec(content)) !== null) {
+              issueNumbers.add(match[1]);
+            }
+            
+            if (issueNumbers.size === 0) {
+              console.log('PR no linkea a ningun issue.');
+              return;
+            }
+
+            for (const issueNum of issueNumbers) {
+              console.log(`Procesando issue #${issueNum} para cierre.`);
+              
+              let issue;
+              try {
+                issue = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum
+                });
+              } catch (e) {
+                console.log(`No se pudo obtener issue #${issueNum}: ${e.message}`);
+                continue;
+              }
+
+              if (issue.data.state !== 'open') {
+                console.log(`Issue #${issueNum} ya está cerrado. Saltando.`);
+                continue;
+              }
+              
+              const hasRfc = (issue.data.labels || []).some(l => norm(l.name) === 'rfc');
+              if (!hasRfc) {
+                console.log(`Issue #${issueNum} no tiene la etiqueta 'rfc'. Saltando.`);
+                continue;
+              }
+              
+              try {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum,
+                  state: 'closed',
+                  state_reason: 'completed'
+                });
+                
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum,
+                  body: `## ✅ Completado
+
+            El Pull Request #${prNumber} que resuelve este issue fue fusionado.
+
+            Cerrando issue y actualizando estado del proyecto a \`Done\`.`
+                            });
+
+                          } catch (e) {
+                            console.log(`No se pudo cerrar o comentar en el issue #${issueNum}: ${e.message}`);
+                          }
+            }
+
   # --- Job: process-ccc-commands (Sin cambios) ---
   process-ccc-commands:
     if: github.event_name == 'issue_comment' && github.event.action == 'created'
@@ -1721,20 +1838,20 @@ jobs:
               if (updated.length === 0 && failed.length === 0) {
                  body = `## ⚠️ No se encontró información para actualizar
 
-                Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
+              Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
 
-                **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`;
-                              } else {
-                                body += `**[Ver en el proyecto →](${userProjUrl})**\n\nEjecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`;
-                              }
-                              
-                              await github.rest.issues.createComment({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: issue.number,
-                                body: body
-                              });
-            }
+              **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`;
+                            } else {
+                              body += `**[Ver en el proyecto →](${userProjUrl})**\n\nEjecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`;
+                            }
+                            
+                            await github.rest.issues.createComment({
+                              owner: context.repo.owner,
+                              repo: context.repo.repo,
+                              issue_number: issue.number,
+                              body: body
+                            });
+                          }
 
   # --- Job: set-project-status-on-close (Sin cambios) ---
   set-project-status-on-close:
