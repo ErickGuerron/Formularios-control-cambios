@@ -4,19 +4,23 @@ import {
   IsOptional,
   IsString,
   Length,
-  Matches
+  Matches,
+  IsArray // Importa IsArray
 } from 'class-validator';
 
 export class CreateUserChangeDto {
-  @ApiProperty({ example: 'SCR 2025-11' })
+  @ApiProperty({
+    example: 'Formulario de Solicitud de Usuario',
+    maxLength: 40
+  })
   @IsString()
-  @Length(3, 100)
+  @Length(3, 40) // Ajustado al límite del formulario
   formName!: string;
 
-  @ApiProperty({ example: 'SCR | Ajuste de validación en perfil' })
+  @ApiProperty({ example: 'Formulario de Solicitud de Usuario' })
   @IsString()
   @Length(3, 140)
-  title!: string;
+  title!: string; // El frontend envía 'formName' como 'title'
 
   @ApiProperty({ example: 'Juan Pérez' })
   @IsString()
@@ -33,9 +37,9 @@ export class CreateUserChangeDto {
   @IsEmail()
   email!: string;
 
-  @ApiProperty({ example: '2025-11-02', description: 'YYYY-MM-DD' })
+  @ApiProperty({ example: '2025-11-03', description: 'YYYY-MM-DD' })
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
-  requestDate!: string;
+  requestDate!: string; // El frontend genera esta fecha
 
   @ApiProperty({
     example: 'Mejora funcional',
@@ -62,14 +66,17 @@ export class CreateUserChangeDto {
   @IsString()
   priorityName!: 'Alta' | 'Media' | 'Baja';
 
-  @ApiPropertyOptional({ example: '2025-11-15', description: 'YYYY-MM-DD' })
-  @IsOptional()
-  @Matches(/^\d{4}-\d{2}-\d{2}$/)
-  desiredDate?: string;
-
   @ApiPropertyOptional({ example: 'Adjuntar evidencia en PR.' })
   @IsOptional()
   @IsString()
   @Length(0, 2000)
   notes?: string;
+
+  @ApiPropertyOptional({
+    example: [],
+    description: 'Array of assignees, sent as empty by default.'
+  })
+  @IsOptional()
+  @IsArray()
+  assignees?: string[];
 }

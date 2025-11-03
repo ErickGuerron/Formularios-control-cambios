@@ -39,6 +39,7 @@ export class RfcService {
       .toLowerCase();
   }
 
+  // --- Lógica de CreateRfcDto (sin cambios) ---
   private issueBody(d: CreateRfcDto) {
     return [
       `### Tipo de cambio`,
@@ -175,44 +176,61 @@ export class RfcService {
         : block;
   }
 
+  // --- LÓGICA DE USUARIO ACTUALIZADA ---
+
+  /**
+   * Construye el body del issue de usuario.
+   * IMPORTANTE: Los encabezados (### ...) deben coincidir EXACTAMENTE
+   * con lo que la GitHub Action (job: process_rfc_on_github) espera
+   * en la función `grab` dentro del bloque `if (hasUserLabel)`.
+   */
   private buildUserIssueBody(d: CreateUserChangeDto) {
-    const parts: Array<[string, string | undefined]> = [
-      ['Formulario', d.formName],
-      ['Solicitante', d.requesterName],
-      ['Área / Departamento', d.department || ''],
-      ['Email', d.email],
-      ['Fecha de solicitud', d.requestDate],
-      ['Motivo de cambio', d.changeType],
-      ['Prioridad', d.priorityName],
-      ['Descripción', d.description],
-      ['Razón', d.reason],
-      ['Fecha deseada', d.desiredDate || ''],
-      ['Notas', d.notes || '']
-    ];
-    return parts.map(([k, v]) => `### ${k}\n\n${v || ''}`).join('\n\n');
+    return [
+      `### Formulario\n\n${d.formName}`,
+      `### Solicitante\n\n${d.requesterName}`,
+      `### Email\n\n${d.email}`, // El Action leerá este campo
+      `### Fecha de solicitud\n\n${d.requestDate}`,
+      `### Área / Departamento\n\n${d.department || ''}`, // Mapea a vDept
+      `### Motivo de cambio\n\n${d.changeType}`, // Mapea a vReason (será traducido)
+      `### Prioridad\n\n${d.priorityName}`, // Mapea a vPrior
+      `### Descripción del cambio solicitado\n\n${d.description}`, // Mapea a vDesc
+      `### Motivo del cambio\n\n${d.reason}`, // Mapea a vExpl (OJO: 'del' cambio)
+      `### Observaciones adicionales\n\n${d.notes || ''}` // Mapea a vNotes
+    ].join('\n\n');
   }
 
   async createUserRFC(dto: CreateUserChangeDto) {
     const body = this.buildUserIssueBody(dto);
-    const res = await this.octo.request('POST /repos/{owner}/{repo}/issues', {
-      owner: this.repoOwner,
-      repo: this.repoName,
-      title: dto.title,
-      body
-    });
-    const issueNo = res.data.number;
+    const issue = await this.createIssue(
+      dto.title, // El frontend asigna formName a title
+      body,
+      dto.assignees
+    );
 
     await this.octo.request(
       'POST /repos/{owner}/{repo}/issues/{issue_number}/labels',
       {
         owner: this.repoOwner,
         repo: this.repoName,
-        issue_number: issueNo,
-        labels: ['user']
+        issue_number: issue.number,
+        labels: ['user', 'rfc'] // Añade ambas etiquetas
       }
     );
 
-    return { issueNumber: issueNo, issueUrl: res.data.html_url };
+    // --- ¡NUEVO! Cierra el issue al crearlo ---
+    await this.octo.request(
+      'PATCH /repos/{owner}/{repo}/issues/{issue_number}',
+      {
+        owner: this.repoOwner,
+        repo: this.repoName,
+        issue_number: issue.number,
+        state: 'closed',
+        state_reason: 'not_planned'
+      }
+    );
+    // --- Fin del cambio ---
+
+    return { issueNumber: issue.number, issueUrl: issue.url };
   }
 
   async completeUserRFC(issueNumber: number, dto: UpdateCreateUserChangeDto) {
@@ -226,6 +244,7 @@ export class RfcService {
     );
     let body = issue.body || '';
 
+    // --- Campos del Formulario de Usuario (con labels correctos) ---
     if (dto.formName)
       body = this.upsertSection(body, 'Formulario', dto.formName);
     if (dto.requesterName)
@@ -244,13 +263,21 @@ export class RfcService {
     if (dto.priorityName)
       body = this.upsertSection(body, 'Prioridad', dto.priorityName);
     if (dto.description)
-      body = this.upsertSection(body, 'Descripción', dto.description);
-    if (dto.reason) body = this.upsertSection(body, 'Razón', dto.reason);
-    if (dto.desiredDate)
-      body = this.upsertSection(body, 'Fecha deseada', dto.desiredDate);
+      body = this.upsertSection(
+        body,
+        'Descripción del cambio solicitado',
+        dto.description
+      );
+    if (dto.reason)
+      body = this.upsertSection(body, 'Motivo del cambio', dto.reason);
     if (dto.notes !== undefined)
-      body = this.upsertSection(body, 'Notas', dto.notes || '');
+      body = this.upsertSection(
+        body,
+        'Observaciones adicionales',
+        dto.notes || ''
+      );
 
+    // --- Campos del Formulario CCC (para /actualizar) ---
     if (dto.impact) body = this.upsertSection(body, 'Impact', dto.impact);
     if (dto.implementationPlan)
       body = this.upsertSection(
@@ -273,7 +300,8 @@ export class RfcService {
     if (dto.targetDate)
       body = this.upsertSection(body, 'Target date', dto.targetDate);
 
-    if (dto.reviewer) body = this.upsertSection(body, 'Reviewer', dto.reviewer);
+    if (dto.reviewer)
+      body = this.upsertSection(body, 'Reviewer', dto.reviewer.join(', '));
 
     const patch: any = {
       owner: this.repoOwner,
@@ -293,14 +321,22 @@ export class RfcService {
     const labels = (issue.labels || []).map((l: any) =>
       (l.name || '').toLowerCase()
     );
+    const labelsToAdd: string[] = [];
     if (!labels.includes('user')) {
+      labelsToAdd.push('user');
+    }
+    if (!labels.includes('rfc')) {
+      labelsToAdd.push('rfc');
+    }
+
+    if (labelsToAdd.length > 0) {
       await this.octo.request(
         'POST /repos/{owner}/{repo}/issues/{issue_number}/labels',
         {
           owner: this.repoOwner,
           repo: this.repoName,
           issue_number: issueNumber,
-          labels: ['user']
+          labels: labelsToAdd
         }
       );
     }

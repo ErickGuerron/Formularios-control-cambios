@@ -175,7 +175,10 @@ jobs:
               if(!projectId || !itemId || !field || !optName) return;
               const opts = field.options || [];
               const opt = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)));
-              if(!opt) return;
+              if(!opt) {
+                console.log(`Opción "${optName}" no encontrada en el campo "${field?.name}"`);
+                return;
+              }
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
@@ -216,7 +219,7 @@ jobs:
 
               const fStatusU    = byU(['Status']);
               const fStatusCccU = byU(['Status_CCC','Status CCC','status_ccc']);
-              const fReasonU    = byU(['Reason for change','Motivo de cambio']);
+              const fReasonU    = byU(['Reason for change','Motivo de cambio']); // Campo de Select
               const fRiskU      = byU(['Risk','Riesgo']);
               const fSolicU     = byU(['Solicitor']);
               const fDeptU      = byU(['Department','Área / Departamento','Area / Departamento']);
@@ -226,24 +229,39 @@ jobs:
               const fExplU      = byU(['Explanation of the reason for the change','Explanation of the reason','Motivo del cambio']);
               const fNotesU     = byU(['Additional comments','Observaciones adicionales']);
 
+              // --- INICIO DE CAMBIOS ---
+              
+              // 1. Obtener valores del body
               const vDept   = grab('Área / Departamento') || grab('Department');
-              const vReason = grab('Reason for change')   || grab('Motivo de cambio');
+              const vReason = grab('Motivo de cambio'); // "Mejora funcional"
               const vPrior  = grab('Prioridad') || grab('priorityname') || grab('Priority') || '';
               let   vDesc   = grab('Descripción del cambio solicitado *') || grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request');
               let   vExpl   = grab('Motivo del cambio *') || grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason');
               const vNotes  = grab('Observaciones adicionales') || grab('Additional comments');
+              const vEmail  = grab('Email') || grab('Contact Email'); // <-- ¡NUEVO!
 
               if(!vDesc) vDesc = (grab('Descripción del cambio') || '').trim();
               if(!vExpl) vExpl = (grab('Explicación del motivo') || '').trim();
 
               const authorLogin = issue.user?.login || context.actor;
               const authorInfo  = await github.graphql(
-                `query($login:String!){ user(login:$login){ name email } }`,
+                `query($login:String!){ user(login:$login){ name } }`, // Ya no pedimos email
                 { login: authorLogin }
               ).catch(()=>null);
               const authorName  = (authorInfo?.user?.name || authorLogin).trim();
-              const authorEmail = (authorInfo?.user?.email || `${authorLogin}@users.noreply.github.com`).trim();
+              
+              // 2. Función de Traducción para el "Reason for change"
+              function translateReason(reason) {
+                const r = norm(reason);
+                if (r.includes('corrección') || r.includes('error')) return 'Error Correction'; // Asume que esta es tu opción en inglés
+                if (r.includes('mejora funcional')) return 'Functional Improvement';
+                if (r.includes('estético')) return 'Cosmetic Change';
+                if (r.includes('otro')) return 'Other';
+                return r; // Fallback
+              }
+              const translatedReason = translateReason(vReason);
 
+              // 3. Función de mapeo para "Risk" (basado en Prioridad)
               function pickRiskFromPriority(priority, riskField){
                 const opts = (riskField?.options || []).map(o => o.name);
                 const names = opts.map(n => norm(n));
@@ -257,25 +275,37 @@ jobs:
                 return med;
               }
 
+              // 4. Setear Status (solo al crear)
               if (context.payload.action === 'opened') {
+                // El issue ya se crea como 'closed', el Action lo re-abre
+                // y lo pone en 'Backlog' y 'Inbox'.
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'open',
+                });
                 await setSelect(projectIdUser, itemIdUser, fStatusU, 'Backlog');
                 await setSelect(projectIdUser, itemIdUser, fStatusCccU, 'Inbox');
               }
 
+              // 5. Aplicar todos los valores al proyecto
               await setText (projectIdUser, itemIdUser, fSolicU?.id,   authorName);
-              await setText (projectIdUser, itemIdUser, fEmailU?.id,   authorEmail);
+              await setText (projectIdUser, itemIdUser, fEmailU?.id,   vEmail); // <-- ¡CAMBIADO!
               await setDate (projectIdUser, itemIdUser, fDateAppU?.id, new Date().toISOString().slice(0,10));
-
-              await setSelect(projectIdUser, itemIdUser, fReasonU,    vReason);
+              await setSelect(projectIdUser, itemIdUser, fReasonU,    translatedReason); // <-- ¡CAMBIADO!
               await setSelect(projectIdUser, itemIdUser, fRiskU,      pickRiskFromPriority(vPrior, fRiskU));
               await setText (projectIdUser, itemIdUser, fDeptU?.id,    vDept);
               await setText (projectIdUser, itemIdUser, fDescU?.id,    vDesc);
               await setText (projectIdUser, itemIdUser, fExplU?.id,    vExpl);
               await setText (projectIdUser, itemIdUser, fNotesU?.id,   vNotes);
-
+              
+              // --- FIN DE CAMBIOS ---
               return;
             }
-
+            
+            // ... (El resto del script para RFCs 'no-user' no cambia) ...
+            
             const projectIdMain = await findProjectV2Main();
             if (!projectIdMain) { console.log('Project principal no encontrado o sin permisos'); return }
             const itemIdMain = await ensureItem(projectIdMain);
@@ -295,6 +325,13 @@ jobs:
             const fSolicM    = byM(['Solicitante','Solicitor','Applicant','Requester']);
 
             if (context.payload.action === 'opened') {
+              // El issue ya se crea como 'closed', el Action lo re-abre
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'open',
+              });
               await setSelect(projectIdMain, itemIdMain, fStatusM, 'Backlog');
               await setSelect(projectIdMain, itemIdMain, fStatusCccM, 'Inbox');
             }
