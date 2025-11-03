@@ -18,16 +18,28 @@ jobs:
             const payload = context.payload;
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
             
-            // 1. Verificar si el cambio es relevante
-            const isColumnChange = payload.project_card.column_id;
-            const isFieldChange = payload.project_card.note;
+            // 1. Verificar si el campo cambiado es 'Status_CCC'
+            const changedField = payload.project_card.note;
+            const changedFieldName = 'Status_CCC';
+            const isStatusCCC = norm(changedField) === norm(changedFieldName);
             
-            if (!isColumnChange && !isFieldChange) {
-              console.log('No relevant changes detected. Skipping.');
+            if (!isStatusCCC) {
+              console.log(`Field changed was '${changedField}', not 'Status_CCC'. Skipping.`);
               return;
             }
             
-            // 2. Obtener información del item
+            // 2. Verificar si el item es un Issue
+            if (payload.project_card.content_type !== 'Issue') {
+              console.log('Item is not an issue. Skipping.');
+              return;
+            }
+            
+            // 3. Obtener el nuevo valor del campo
+            const newValue = payload.project_card.note;
+            const normValue = norm(newValue);
+            console.log(`Status_CCC changed to: ${newValue}`);
+            
+            // 4. Obtener la información del Issue
             const issueNodeId = payload.project_card.content_id;
             const issueInfo = await github.graphql(
               `query($nodeId: ID!){
@@ -53,85 +65,48 @@ jobs:
               return;
             }
             
+            // 5. Verificar si es un issue de "user"
+            const hasUser = (issue.labels.nodes || []).some(l => norm(l.name) === 'user');
+            if (!hasUser) {
+              console.log('Issue does not have "user" label. Skipping.');
+              return;
+            }
+            
             const repo = issue.repository.name;
             const owner = issue.repository.owner.login;
             const issue_number = issue.number;
             
-            // 3. Obtener columnas del proyecto
-            const columns = await github.graphql(
-              `query($projectId:ID!){
-                node(id:$projectId) {
-                  ... on Project {
-                    columns(first:100) {
-                      nodes {
-                        id
-                        name
+            // --- INICIO DE FUNCIONES DE AYUDA ---
+            async function getFields() {
+              const r = await github.graphql(
+                `query($projectId:ID!){
+                  node(id:$projectId){ 
+                    ... on Project {
+                      columns(first:100) {
+                        nodes {
+                          name
+                        }
                       }
                     }
                   }
-                }
-              }`, { projectId: payload.project.number }
-            );
-            
-            // 4. Procesar cambios de columna
-            if (isColumnChange) {
-              const currentColumn = columns.node.columns.nodes.find(col => col.id === payload.project_card.column_id);
-              const previousColumn = columns.node.columns.nodes.find(col => col.id === payload.project_card.previous_column_id);
-              
-              if (currentColumn && previousColumn) {
-                console.log(`Item moved from column "${previousColumn.name}" to "${currentColumn.name}"`);
-                
-                // Verificar si el movimiento es relevante para Status_CCC
-                if (norm(currentColumn.name) === norm('Status_CCC')) {
-                  await handleStatusCCCChange(issue, currentColumn, owner, repo, issue_number);
-                }
-              }
+                }`, { projectId: payload.project.number }
+              );
+              return r.node.columns.nodes;
             }
             
-            // 5. Procesar cambios de campo
-            if (isFieldChange) {
-              const isStatusCCC = norm(payload.project_card.note) === norm('Status_CCC');
-              if (isStatusCCC) {
-                await handleStatusCCCChange(issue, null, owner, repo, issue_number);
-              }
+            async function getFieldValues() {
+              return payload.project_card;
             }
             
-            async function handleStatusCCCChange(issue, column, owner, repo, issue_number) {
-              const requiredFields = ['Impact', 'Implementation Plan', 'RollBack Planning', 'Test Planning', 'Approvers', 'Start date', 'Target date'];
-              const missing = [];
-              
-              // Verificar campos requeridos
-              for (const field of requiredFields) {
-                if (!getFieldValue(field)) {
-                  missing.push(field);
-                }
-              }
-              
-              if (missing.length) {
-                // CAMPOS FALTANTES: Revertir y comentar
-                console.log('Missing fields. Reverting to Inbox.');
-                await moveToColumn('Inbox');
-                const list = missing.map(m => `- [ ] ${m}`).join('\n');
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number,
-                  body: `### Datos adicionales requeridos\nSe movió a **Status_CCC**, pero faltan los siguientes campos en el Proyecto:\n\n${list}\n\nSe revirtió **Status_CCC → Inbox**. Por favor, completa los campos faltantes en la vista del proyecto e intenta moverla a "Status_CCC" nuevamente.`
-                });
-              } else {
-                // CAMPOS COMPLETOS: Asignar etiqueta 'approved'
-                console.log('All fields present. Adding "approved" label.');
-                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['approved'] });
-                try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: 'denied' }) } catch(e){}
-              }
+            function getValue(field, values) {
+              if (!field) return null;
+              return values[field];
             }
             
-            function getFieldValue(fieldName) {
-              // Implementar lógica para obtener el valor del campo
-              // Esta función debe adaptarse según cómo tengas organizados tus campos
-              return true; // Placeholder
-            }
-            
-            async function moveToColumn(columnName) {
-              const targetColumn = columns.node.columns.nodes.find(col => norm(col.name) === norm(columnName));
+            async function setColumn(projectId, cardId, columnName) {
+              if (!columnName) return;
+              const columns = await getFields();
+              const targetColumn = columns.find(col => norm(col.name) === norm(columnName));
               if (!targetColumn) return;
               
               await github.graphql(
@@ -141,10 +116,51 @@ jobs:
                     cardId: $cardId,
                     columnId: $columnId
                   }){ clientMutationId }
-                }`, { 
-                  projectId: payload.project.number,
-                  cardId: payload.project_card.id,
-                  columnId: targetColumn.id 
-                }
+                }`, { projectId, cardId, columnId: targetColumn.id }
               );
+            }
+            
+            // --- FIN DE FUNCIONES DE AYUDA ---
+            
+            // 6. Lógica de Aprobación/Denegación
+            const columns = await getFields();
+            const fInbox = columns.find(col => norm(col.name) === norm('Inbox'));
+            const fApproved = columns.find(col => norm(col.name) === norm('Approved'));
+            
+            if (normValue === 'approved' || normValue === 'aprobado') {
+              // --- Lógica del "Formulario" al mover a Approved ---
+              const requiredFields = ['Impact', 'Implementation Plan', 'RollBack Planning', 'Test Planning', 'Approvers', 'Start date', 'Target date'];
+              const missing = [];
+              
+              for (const field of requiredFields) {
+                if (!getValue(field, payload.project_card)) {
+                  missing.push(field);
+                }
+              }
+              
+              if (missing.length) {
+                // CAMPOS FALTANTES: Revertir a Inbox y comentar
+                console.log('Missing fields. Reverting to Inbox.');
+                await setColumn(payload.project.number, payload.project_card.id, 'Inbox');
+                const list = missing.map(m => `- [ ] ${m}`).join('\n');
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number,
+                  body: `### Datos adicionales requeridos\nSe movió a **Approved**, pero faltan los siguientes campos en el Proyecto:\n\n${list}\n\nSe revirtió **Status_CCC → Inbox**. Por favor, completa los campos faltantes en la vista del proyecto e intenta moverla a "Approved" nuevamente.`
+                });
+              } else {
+                // CAMPOS COMPLETOS: Asignar etiqueta 'approved'
+                console.log('All fields present. Adding "approved" label.');
+                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['approved'] });
+                try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: 'denied' }) } catch(e){}
+              }
+            } else if (normValue === 'denied' || normValue === 'denegado') {
+              // --- Lógica al mover a Denied ---
+              console.log('Status is Denied. Adding "denied" label.');
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['denied'] });
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: 'approved' }) } catch(e){}
+            } else {
+              // --- Lógica para cualquier otro estado (Inbox, etc) ---
+              console.log(`Status is ${newValue}. Removing approval/denial labels.`);
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: 'approved' }) } catch(e){}
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: 'denied' }) } catch(e){}
             }
