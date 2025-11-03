@@ -1,0 +1,72 @@
+name: "Solicitud de Cambio de Software (Usuario Final)"
+description: Captura de datos del usuario final para un cambio de software
+title: "[USER] Título breve del cambio"
+labels: ["user","rfc"]
+body:
+  - type: input
+    id: nombre_solicitante
+    attributes:
+      label: "Nombre del solicitante *"
+      placeholder: "Tu nombre completo"
+    validations:
+      required: true
+
+  - type: input
+    id: area_departamento
+    attributes:
+      label: "Área / Departamento"
+      placeholder: "Ej. Finanzas, Ventas, RRHH"
+
+  - type: input
+    id: correo_contacto
+    attributes:
+      label: "Correo de contacto *"
+      placeholder: "tu@correo.com"
+    validations:
+      required: true
+
+  - type: input
+    id: fecha_solicitud
+    attributes:
+      label: "Fecha de solicitud *"
+      placeholder: "YYYY-MM-DD"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: motivo_cambio
+    attributes:
+      label: "Motivo de cambio *"
+      options: ["Funcionalidad nueva","Mejora","Corrección","Documentación","Otro"]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: prioridad
+    attributes:
+      label: "Prioridad *"
+      options: ["Alta","Media","Baja"]
+    validations:
+      required: true
+
+  - type: textarea
+    id: descripcion
+    attributes:
+      label: "Descripción del cambio solicitado *"
+      placeholder: "Explica claramente qué cambio necesitas"
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivo_detallado
+    attributes:
+      label: "Motivo del cambio *"
+      placeholder: "¿Por qué se requiere este cambio? (impacto, cumplimiento, etc.)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: observaciones
+    attributes:
+      label: "Observaciones adicionales"
+      placeholder: "Información extra que ayude a evaluar tu solicitud"
