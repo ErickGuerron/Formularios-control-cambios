@@ -3,6 +3,9 @@ name: RFC Controller
 on:
   issues:
     types: [opened, edited, labeled, closed, deleted]
+  project_v2_item:
+    types: [edited]
+    fields: [status_CCC]
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}-${{ github.event.action }}
@@ -24,7 +27,7 @@ env:
 
 jobs:
   process_rfc_on_github:
-    if: github.event.action == 'opened' || github.event.action == 'edited' || github.event.action == 'labeled'
+    if: github.event.action == 'opened' || github.event.action == 'edited'
     runs-on: ubuntu-latest
     steps:
       - name: Add labels, Add to Project, and Map Fields
@@ -32,104 +35,104 @@ jobs:
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
-            const issue = context.payload.issue
-            const owner = context.repo.owner
-            const repo  = context.repo.repo
-            const body = issue.body || ''
-            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
+            const issue = context.payload.issue;
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const body = issue.body || '';
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
 
             function escRE(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
             const grab = (label) => {
-              const L = escRE(label)
+              const L = escRE(label);
               const variants = [
                 new RegExp(`^###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n$|$)`, 'im'),
                 new RegExp(`\\*\\*${L}\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?=\\n\\*\\*|\\n###|\\n$|$)`, 'i'),
                 new RegExp(`^${L}\\s*:\\s*(.+)$`, 'im')
-              ]
+              ];
               for (const re of variants){ const m = body.match(re); if(m) return m[1].trim() }
-              return ''
+              return '';
             }
 
-            const tipo   = (grab('Tipo de cambio') || '').toLowerCase()
-            const riesgo = (grab('Riesgo') || '').toLowerCase()
+            const tipo   = (grab('Tipo de cambio') || '').toLowerCase();
+            const riesgo = (grab('Riesgo') || '').toLowerCase();
 
-            const wanted = new Set(['rfc'])
-            if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
-            if (tipo.includes('normal'))                                 wanted.add('tipo:normal')
-            if (tipo.includes('emergencia') || tipo.includes('urgente')) wanted.add('tipo:emergencia')
-            if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo')
-            if (riesgo.includes('medio')) wanted.add('riesgo:medio')
-            if (riesgo.includes('alto'))  wanted.add('riesgo:alto')
+            const wanted = new Set(['rfc']);
+            if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar');
+            if (tipo.includes('normal'))                                 wanted.add('tipo:normal');
+            if (tipo.includes('emergencia') || tipo.includes('urgente')) wanted.add('tipo:emergencia');
+            if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo');
+            if (riesgo.includes('medio')) wanted.add('riesgo:medio');
+            if (riesgo.includes('alto'))  wanted.add('riesgo:alto');
 
-            const current = new Set((issue.labels || []).map(l => l.name))
-            const toAdd = [...wanted].filter(l => !current.has(l))
+            const current = new Set((issue.labels || []).map(l => l.name));
+            const toAdd = [...wanted].filter(l => !current.has(l));
             if (toAdd.length) {
-              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: toAdd })
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: toAdd });
             }
 
-            const hasUserLabel = (issue.labels || []).some(l => norm(l.name) === 'user')
+            const hasUserLabel = (issue.labels || []).some(l => norm(l.name) === 'user');
 
-            const ORG_LOGIN = process.env.ORG_LOGIN
-            const USER_LOGIN = process.env.USER_LOGIN
-            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER || '0', 10)
-            const PROJECT_TITLE  = process.env.PROJECT_TITLE || ''
-            const PROJECT_NUMBER_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10)
-            const PROJECT_TITLE_USER  = process.env.PROJECT_TITLE_USER || ''
-            const PROJECT_URL = process.env.PROJECT_URL || ''
+            const ORG_LOGIN = process.env.ORG_LOGIN;
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const PROJECT_NUMBER = parseInt(process.env.PROJECT_NUMBER || '0', 10);
+            const PROJECT_TITLE  = process.env.PROJECT_TITLE || '';
+            const PROJECT_NUMBER_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            const PROJECT_TITLE_USER  = process.env.PROJECT_TITLE_USER || '';
+            const PROJECT_URL = process.env.PROJECT_URL || '';
 
             async function resolveFromUrl(url){
-              const mu = url.match(/https:\/\/github\.com\/users\/([^/]+)\/projects\/(\d+)/i)
+              const mu = url.match(/https:\/\/github\.com\/users\/([^/]+)\/projects\/(\d+)/i);
               if (mu) {
-                const login = mu[1], num = parseInt(mu[2],10)
+                const login = mu[1], num = parseInt(mu[2],10);
                 const r = await github.graphql(
                   `query($login:String!){
                     user(login:$login){ projectsV2(first:100){ nodes{ id number title } } }
                   }`, { login }
-                ).catch(()=>null)
-                const hit = r?.user?.projectsV2?.nodes?.find(n=>n.number===num)
-                if (hit) return hit.id
+                ).catch(()=>null);
+                const hit = r?.user?.projectsV2?.nodes?.find(n=>n.number===num);
+                if (hit) return hit.id;
               }
-              return null
+              return null;
             }
             async function resolveByUser(numberOrTitle){
               const r = await github.graphql(
                 `query($login:String!){
                   user(login:$login){ projectsV2(first:100){ nodes{ id number title } } }
                 }`, { login: USER_LOGIN }
-              ).catch(()=>null)
-              const nodes = r?.user?.projectsV2?.nodes || []
-              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) return nodes.find(n=>n.number===numberOrTitle)?.id || null
-              if (typeof numberOrTitle === 'string' && numberOrTitle)     return nodes.find(n=>n.title===numberOrTitle)?.id  || null
-              return null
+              ).catch(()=>null);
+              const nodes = r?.user?.projectsV2?.nodes || [];
+              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) return nodes.find(n=>n.number===numberOrTitle)?.id || null;
+              if (typeof numberOrTitle === 'string' && numberOrTitle)     return nodes.find(n=>n.title===numberOrTitle)?.id  || null;
+              return null;
             }
             async function resolveByOrg(numberOrTitle){
-              if (!ORG_LOGIN) return null
+              if (!ORG_LOGIN) return null;
               const r = await github.graphql(
                 `query($login:String!){
                   organization(login:$login){ projectsV2(first:100){ nodes{ id number title } } }
                 }`, { login: ORG_LOGIN }
-              ).catch(()=>null)
-              const nodes = r?.organization?.projectsV2?.nodes || []
-              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) return nodes.find(n=>n.number===numberOrTitle)?.id || null
-              if (typeof numberOrTitle === 'string' && numberOrTitle)     return nodes.find(n=>n.title===numberOrTitle)?.id  || null
-              return null
+              ).catch(()=>null);
+              const nodes = r?.organization?.projectsV2?.nodes || [];
+              if (typeof numberOrTitle === 'number' && numberOrTitle > 0) return nodes.find(n=>n.number===numberOrTitle)?.id || null;
+              if (typeof numberOrTitle === 'string' && numberOrTitle)     return nodes.find(n=>n.title===numberOrTitle)?.id  || null;
+              return null;
             }
             async function findProjectV2Main() {
-              let id = await resolveFromUrl(PROJECT_URL)
-              if (!id) id = await resolveByUser(PROJECT_NUMBER) || await resolveByUser(PROJECT_TITLE)
-              if (!id) id = await resolveByOrg(PROJECT_NUMBER)  || await resolveByOrg(PROJECT_TITLE)
-              return id
+              let id = await resolveFromUrl(PROJECT_URL);
+              if (!id) id = await resolveByUser(PROJECT_NUMBER) || await resolveByUser(PROJECT_TITLE);
+              if (!id) id = await resolveByOrg(PROJECT_NUMBER)  || await resolveByOrg(PROJECT_TITLE);
+              return id;
             }
             async function findProjectV2User() {
-              return await resolveByUser(PROJECT_NUMBER_USER) || await resolveByUser(PROJECT_TITLE_USER)
+              return await resolveByUser(PROJECT_NUMBER_USER) || await resolveByUser(PROJECT_TITLE_USER);
             }
 
             const issueRes = await github.graphql(
               `query($owner:String!, $name:String!, $n:Int!){
                 repository(owner:$owner, name:$name){ issue(number:$n){ id number } }
               }`, { owner, name: repo, n: issue.number }
-            )
-            const issueId = issueRes.repository.issue.id
+            );
+            const issueId = issueRes.repository.issue.id;
 
             async function ensureItem(projectId){
               const srch = await github.graphql(
@@ -138,15 +141,15 @@ jobs:
                     items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
                   } }
                 }`, { projectId, q: String(issue.number) }
-              )
-              let it = srch?.node?.items?.nodes?.find(n=>n.content?.number===issue.number)
-              if (it) return it.id
+              );
+              let it = srch?.node?.items?.nodes?.find(n=>n.content?.number===issue.number);
+              if (it) return it.id;
               const add = await github.graphql(
                 `mutation($projectId:ID!, $contentId:ID!){
                   addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
                 }`, { projectId, contentId: issueId }
-              ).catch(()=>null)
-              return add?.addProjectV2ItemById?.item?.id || null
+              ).catch(()=>null);
+              return add?.addProjectV2ItemById?.item?.id || null;
             }
 
             async function getFields(projectId){
@@ -159,174 +162,180 @@ jobs:
                     } }
                   } }
                 }`, { projectId }
-              ).catch(()=>null)
-              return r?.node?.fields?.nodes || []
+              ).catch(()=>null);
+              return r?.node?.fields?.nodes || [];
             }
 
             const setSelect = async(projectId,itemId,field,optName)=>{
-              if(!projectId || !itemId || !field || !optName) return
-              const opts = field.options || []
-              const opt = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)))
-              if(!opt) return
+              if(!projectId || !itemId || !field || !optName) return;
+              const opts = field.options || [];
+              const opt = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)));
+              if(!opt) return;
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId: field.id, opt: opt.id }
-              ).catch(()=>null)
+              ).catch(()=>null);
             }
             const setText = async(projectId,itemId,fieldId,val)=>{
-              if(!projectId || !itemId || !fieldId || !val) return
+              if(!projectId || !itemId || !fieldId) return; 
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
-                }`, { projectId, itemId, fieldId: fieldId, val: val }
-              ).catch(()=>null)
+                }`, { projectId, itemId, fieldId: fieldId, val: val || "" }
+              ).catch(()=>null);
             }
             const setDate = async(projectId,itemId,fieldId,ymd)=>{
-              if(!projectId || !itemId || !fieldId || !ymd) return
+              if(!projectId || !itemId || !fieldId || !ymd) return;
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:Date!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId: fieldId, val: ymd }
-              ).catch(()=>null)
+              ).catch(()=>null);
             }
 
             if (hasUserLabel) {
-              const projectIdUser = await findProjectV2User()
+              const projectIdUser = await findProjectV2User();
               if (!projectIdUser) { console.log('Project usuarios no encontrado o sin permisos'); return }
-              const itemIdUser = await ensureItem(projectIdUser)
+              const itemIdUser = await ensureItem(projectIdUser);
               if (!itemIdUser) { console.log('No se pudo crear/encontrar item en Project usuarios'); return }
 
-              const fieldsUser = await getFields(projectIdUser)
+              const fieldsUser = await getFields(projectIdUser);
               const byU = (names) => {
-                const want = names.map(n => norm(n))
+                const want = names.map(n => norm(n));
                 return fieldsUser.find(f => {
-                  const fn = norm(f?.name)
-                  return want.some(w => fn === w || fn.includes(w))
-                })
+                  const fn = norm(f?.name);
+                  return want.some(w => fn === w || fn.includes(w));
+                });
               }
 
-              const fStatusU    = byU(['Status'])
-              const fStatusCccU = byU(['Status_CCC','Status CCC','status_ccc'])
-              const fReasonU    = byU(['Reason for change','Motivo de cambio'])
-              const fRiskU      = byU(['Risk','Riesgo'])
-              const fSolicU     = byU(['Solicitor'])
-              const fDeptU      = byU(['Department','Área / Departamento','Area / Departamento'])
-              const fEmailU     = byU(['Contact Email'])
-              const fDateAppU   = byU(['Date of application'])
-              const fDescU      = byU(['Description of the requested change','Description of the request','Descripción del cambio solicitado'])
-              const fExplU      = byU(['Explanation of the reason for the change','Explanation of the reason','Motivo del cambio'])
-              const fNotesU     = byU(['Additional comments','Observaciones adicionales'])
+              const fStatusU    = byU(['Status']);
+              const fStatusCccU = byU(['Status_CCC','Status CCC','status_ccc']);
+              const fReasonU    = byU(['Reason for change','Motivo de cambio']);
+              const fRiskU      = byU(['Risk','Riesgo']);
+              const fSolicU     = byU(['Solicitor']);
+              const fDeptU      = byU(['Department','Área / Departamento','Area / Departamento']);
+              const fEmailU     = byU(['Contact Email']);
+              const fDateAppU   = byU(['Date of application']);
+              const fDescU      = byU(['Description of the requested change','Description of the request','Descripción del cambio solicitado']);
+              const fExplU      = byU(['Explanation of the reason for the change','Explanation of the reason','Motivo del cambio']);
+              const fNotesU     = byU(['Additional comments','Observaciones adicionales']);
 
-              const vDept   = grab('Área / Departamento') || grab('Department')
-              const vReason = grab('Reason for change')   || grab('Motivo de cambio')
-              const vPrior  = grab('Prioridad') || grab('priorityname') || grab('Priority') || ''
-              let   vDesc   = grab('Descripción del cambio solicitado *') || grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request')
-              let   vExpl   = grab('Motivo del cambio *') || grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason')
-              const vNotes  = grab('Observaciones adicionales') || grab('Additional comments')
+              const vDept   = grab('Área / Departamento') || grab('Department');
+              const vReason = grab('Reason for change')   || grab('Motivo de cambio');
+              const vPrior  = grab('Prioridad') || grab('priorityname') || grab('Priority') || '';
+              let   vDesc   = grab('Descripción del cambio solicitado *') || grab('Descripción del cambio solicitado') || grab('Description of the requested change') || grab('Description of the request');
+              let   vExpl   = grab('Motivo del cambio *') || grab('Motivo del cambio') || grab('Explanation of the reason for the change') || grab('Explanation of the reason');
+              const vNotes  = grab('Observaciones adicionales') || grab('Additional comments');
 
-              if(!vDesc) vDesc = (grab('Descripción del cambio') || '').trim()
-              if(!vExpl) vExpl = (grab('Explicación del motivo') || '').trim()
+              if(!vDesc) vDesc = (grab('Descripción del cambio') || '').trim();
+              if(!vExpl) vExpl = (grab('Explicación del motivo') || '').trim();
 
-              const authorLogin = issue.user?.login || context.actor
+              const authorLogin = issue.user?.login || context.actor;
               const authorInfo  = await github.graphql(
                 `query($login:String!){ user(login:$login){ name email } }`,
                 { login: authorLogin }
-              ).catch(()=>null)
-              const authorName  = (authorInfo?.user?.name || authorLogin).trim()
-              const authorEmail = (authorInfo?.user?.email || `${authorLogin}@users.noreply.github.com`).trim()
+              ).catch(()=>null);
+              const authorName  = (authorInfo?.user?.name || authorLogin).trim();
+              const authorEmail = (authorInfo?.user?.email || `${authorLogin}@users.noreply.github.com`).trim();
 
               function pickRiskFromPriority(priority, riskField){
-                const opts = (riskField?.options || []).map(o => o.name)
-                const names = opts.map(n => norm(n))
-                const high  = opts[names.findIndex(n => /high|alto/.test(n))]   ?? opts.find(o=>/high|alto/i.test(o))   ?? 'High'
-                const med   = opts[names.findIndex(n => /medium|medio/.test(n))]?? opts.find(o=>/medium|medio/i.test(o))?? 'Medium'
-                const low   = opts[names.findIndex(n => /low|bajo/.test(n))]    ?? opts.find(o=>/low|bajo/i.test(o))    ?? 'Low'
-                const v = norm(priority)
-                if (/(crit|urg|alta|alto|high)/.test(v))   return high
-                if (/(med|medio|media|medium|normal)/.test(v)) return med
-                if (/(baj|baja|low)/.test(v))               return low
-                return med
+                const opts = (riskField?.options || []).map(o => o.name);
+                const names = opts.map(n => norm(n));
+                const high  = opts[names.findIndex(n => /high|alto/.test(n))]   ?? opts.find(o=>/high|alto/i.test(o))   ?? 'High';
+                const med   = opts[names.findIndex(n => /medium|medio/.test(n))]?? opts.find(o=>/medium|medio/i.test(o))?? 'Medium';
+                const low   = opts[names.findIndex(n => /low|bajo/.test(n))]    ?? opts.find(o=>/low|bajo/i.test(o))    ?? 'Low';
+                const v = norm(priority);
+                if (/(crit|urg|alta|alto|high)/.test(v))   return high;
+                if (/(med|medio|media|medium|normal)/.test(v)) return med;
+                if (/(baj|baja|low)/.test(v))               return low;
+                return med;
               }
 
               if (context.payload.action === 'opened') {
-                await setSelect(projectIdUser, itemIdUser, fStatusU, 'Backlog')
-                await setSelect(projectIdUser, itemIdUser, fStatusCccU, 'Inbox')
+                await setSelect(projectIdUser, itemIdUser, fStatusU, 'Backlog');
+                await setSelect(projectIdUser, itemIdUser, fStatusCccU, 'Inbox');
               }
 
-              await setText (projectIdUser, itemIdUser, fSolicU?.id,   authorName)
-              await setText (projectIdUser, itemIdUser, fEmailU?.id,   authorEmail)
-              await setDate (projectIdUser, itemIdUser, fDateAppU?.id, new Date().toISOString().slice(0,10))
+              await setText (projectIdUser, itemIdUser, fSolicU?.id,   authorName);
+              await setText (projectIdUser, itemIdUser, fEmailU?.id,   authorEmail);
+              await setDate (projectIdUser, itemIdUser, fDateAppU?.id, new Date().toISOString().slice(0,10));
 
-              await setSelect(projectIdUser, itemIdUser, fReasonU,    vReason)
-              await setSelect(projectIdUser, itemIdUser, fRiskU,      pickRiskFromPriority(vPrior, fRiskU))
-              await setText (projectIdUser, itemIdUser, fDeptU?.id,    vDept)
-              await setText (projectIdUser, itemIdUser, fDescU?.id,    vDesc)
-              await setText (projectIdUser, itemIdUser, fExplU?.id,    vExpl)
-              await setText (projectIdUser, itemIdUser, fNotesU?.id,   vNotes)
+              await setSelect(projectIdUser, itemIdUser, fReasonU,    vReason);
+              await setSelect(projectIdUser, itemIdUser, fRiskU,      pickRiskFromPriority(vPrior, fRiskU));
+              await setText (projectIdUser, itemIdUser, fDeptU?.id,    vDept);
+              await setText (projectIdUser, itemIdUser, fDescU?.id,    vDesc);
+              await setText (projectIdUser, itemIdUser, fExplU?.id,    vExpl);
+              await setText (projectIdUser, itemIdUser, fNotesU?.id,   vNotes);
 
-              return
+              return;
             }
 
-            const projectIdMain = await findProjectV2Main()
+            const projectIdMain = await findProjectV2Main();
             if (!projectIdMain) { console.log('Project principal no encontrado o sin permisos'); return }
-            const itemIdMain = await ensureItem(projectIdMain)
+            const itemIdMain = await ensureItem(projectIdMain);
             if (!itemIdMain) { console.log('No se pudo crear/encontrar item en Project principal'); return }
-            const fieldsMain = await getFields(projectIdMain)
-            const byM = (names)=> names.map(n=>fieldsMain.find(f=>norm(f?.name)===norm(n))).find(Boolean)
+            const fieldsMain = await getFields(projectIdMain);
+            const byM = (names)=> names.map(n=>fieldsMain.find(f=>norm(f?.name)===norm(n))).find(Boolean);
 
-            const fStatusM   = byM(['Status','Estado'])
-            const fStatusCccM= byM(['Status_CCC','Status CCC','status_ccc'])
-            const fTipoM     = byM(['Change Type','Tipo de cambio'])
-            const fRiesgoM   = byM(['Risk','Riesgo'])
-            const fImpactoM  = byM(['Impact','Impacto'])
-            const fPlanM     = byM(['Implementation Plan','Plan de implementación'])
-            const fRollbackM = byM(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
-            const fPruebasM  = byM(['Test Planning','Plan de pruebas'])
-            const fVIniM     = byM(['Init','Start date'])
-            const fVFinM     = byM(['Completion','Target date'])
-            const fAprobM    = byM(['Approvers','Aprobadores requeridos'])
-            const fSolicM    = byM(['Solicitante','Solicitor','Applicant','Requester'])
+            const fStatusM   = byM(['Status','Estado']);
+            const fStatusCccM= byM(['Status_CCC','Status CCC','status_ccc']);
+            const fTipoM     = byM(['Change Type','Tipo de cambio']);
+            const fRiesgoM   = byM(['Risk','Riesgo']);
+            const fImpactoM  = byM(['Impact','Impacto']);
+            const fPlanM     = byM(['Implementation Plan','Plan de implementación']);
+            const fRollbackM = byM(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)']);
+            const fPruebasM  = byM(['Test Planning','Plan de pruebas']);
+            const fAprobM    = byM(['Approvers','Aprobadores requeridos']);
+            const fSolicM    = byM(['Solicitante','Solicitor','Applicant','Requester']);
 
             if (context.payload.action === 'opened') {
-              await setSelect(projectIdMain, itemIdMain, fStatusM, 'Backlog')
-              await setSelect(projectIdMain, itemIdMain, fStatusCccM, 'Inbox')
+              await setSelect(projectIdMain, itemIdMain, fStatusM, 'Backlog');
+              await setSelect(projectIdMain, itemIdMain, fStatusCccM, 'Inbox');
             }
-            await setSelect(projectIdMain, itemIdMain, fTipoM,   tipo)
-            await setSelect(projectIdMain, itemIdMain, fRiesgoM, riesgo)
-            await setText  (projectIdMain, itemIdMain, fImpactoM?.id, grab('Impacto') || grab('Impact'))
-            await setText  (projectIdMain, itemIdMain, fPlanM?.id,    grab('Plan de implementación') || grab('Implementation Plan'))
-            await setText  (projectIdMain, itemIdMain, fRollbackM?.id,grab('Plan de reversa \\(rollback\\)') || grab('RollBack Planning') || grab('Rollback Plan'))
-            await setText  (projectIdMain, itemIdMain, fPruebasM?.id, grab('Plan de pruebas') || grab('Test Planning'))
-            await setText  (projectIdMain, itemIdMain, fAprobM?.id,   grab('Aprobadores requeridos') || grab('Approvers'))
-            await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'))
+            await setSelect(projectIdMain, itemIdMain, fTipoM,   tipo);
+            await setSelect(projectIdMain, itemIdMain, fRiesgoM, riesgo);
+            await setText  (projectIdMain, itemIdMain, fImpactoM?.id, grab('Impacto') || grab('Impact'));
+            await setText  (projectIdMain, itemIdMain, fPlanM?.id,    grab('Plan de implementación') || grab('Implementation Plan'));
+            await setText  (projectIdMain, itemIdMain, fRollbackM?.id,grab('Plan de reversa \\(rollback\\)') || grab('RollBack Planning') || grab('Rollback Plan'));
+            await setText  (projectIdMain, itemIdMain, fPruebasM?.id, grab('Plan de pruebas') || grab('Test Planning'));
+            await setText  (projectIdMain, itemIdMain, fAprobM?.id,   grab('Aprobadores requeridos') || grab('Approvers'));
+            await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'));
 
-  # --- ESTE JOB SE VUELVE A AÑADIR ---
   enforce-user-post-approve:
     if: >
       github.event.action == 'labeled' &&
-      contains(fromJSON('["approved","Approved","aprobado","Aprobado"]'), github.event.label.name)
+      (github.event.label.name == 'approved' ||
+       github.event.label.name == 'Approved' ||
+       github.event.label.name == 'aprobado' ||
+       github.event.label.name == 'Aprobado')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
-            const issue = context.payload.issue
-            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
-            const hasUser = (issue.labels || []).some(l => norm(l.name)==='user')
-            if (!hasUser) return
+            const issue = context.payload.issue;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            const hasUser = (issue.labels || []).some(l => norm(l.name)==='user');
+            if (!hasUser) {
+              console.log('Issue no tiene label "user". Saltando.');
+              return;
+            }
 
-            const USER_LOGIN = process.env.USER_LOGIN
-            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10)
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10);
+            
+            // --- CONSTRUIR LA URL DEL PROYECTO DE USUARIO ---
+            const userProjUrl = `https://github.com/users/${USER_LOGIN}/projects/${PN_USER}`;
 
             async function getUserProjByNum(n){
               const r = await github.graphql(
                 `query($login:String!){
                   user(login:$login){ projectsV2(first:50){ nodes{ id number } } }
                 }`, { login: USER_LOGIN }
-              ).catch(()=>null)
-              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
             async function findItemId(projectId, issueNumber){
               const r = await github.graphql(
@@ -335,8 +344,8 @@ jobs:
                     items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
                   } }
                 }`, { projectId, q: String(issueNumber) }
-              )
-              return r.node.items.nodes.find(n=>n.content?.number===issueNumber)?.id || null
+              );
+              return r.node.items.nodes.find(n=>n.content?.number===issueNumber)?.id || null;
             }
             async function getFields(projectId){
               const r = await github.graphql(
@@ -348,8 +357,8 @@ jobs:
                     } }
                   } }
                 }`, { projectId }
-              )
-              return r.node.fields.nodes
+              );
+              return r.node.fields.nodes;
             }
             async function getFieldValues(itemId){
               const r = await github.graphql(
@@ -366,74 +375,97 @@ jobs:
                     }
                   }
                 }`, { itemId }
-              )
-              return r.node.fieldValues.nodes
+              );
+              return r.node.fieldValues.nodes;
             }
-            const by = (fields, names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean)
+            const by = (fields, names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
             async function setSelect(projectId,itemId,field,optName){
-              if(!field || !optName) return
-              const opts = field.options || []
-              const wanted = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)))
-              if(!wanted) return
+              if(!field || !optName) return;
+              const opts = field.options || [];
+              const wanted = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)));
+              if(!wanted) return;
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
                 }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
-              )
+              );
             }
 
-            const projectId = await getUserProjByNum(PN_USER)
-            if(!projectId) return
-            const itemId = await findItemId(projectId, issue.number)
-            if(!itemId) return
+            const projectId = await getUserProjByNum(PN_USER);
+            if(!projectId) {
+              console.log('Proyecto de usuario no encontrado.');
+              return;
+            }
+            const itemId = await findItemId(projectId, issue.number);
+            if(!itemId) {
+              console.log('Item no encontrado en el proyecto.');
+              return;
+            }
 
-            const fields = await getFields(projectId)
-            const fStatusCcc = by(fields, ['Status_CCC','Status CCC','status_ccc'])
-            const fImpact    = by(fields, ['Impact'])
-            const fPlan      = by(fields, ['Implementation Plan'])
-            const fRollback  = by(fields, ['RollBack Planning','Rollback Plan'])
-            const fPruebas   = by(fields, ['Test Planning'])
-            const fAprob     = by(fields, ['Approvers'])
-            const fStart     = by(fields, ['Start date'])
-            const fTarget    = by(fields, ['Target date'])
+            const fields = await getFields(projectId);
+            const fStatusCcc = by(fields, ['Status_CCC','Status CCC','status_ccc']);
+            const fImpact    = by(fields, ['Impact']);
+            const fPlan      = by(fields, ['Implementation Plan']);
+            const fRollback  = by(fields, ['RollBack Planning','Rollback Plan']);
+            const fPruebas   = by(fields, ['Test Planning']);
+            const fAprob     = by(fields, ['Approvers']);
+            const fStart     = by(fields, ['Start date']);
+            const fTarget    = by(fields, ['Target date']);
 
-            const values = await getFieldValues(itemId)
+            const values = await getFieldValues(itemId);
             function getValue(field){
-              if(!field) return null
-              const v = values.find(n => norm(n.field?.name) === norm(field.name))
-              if(!v) return null
-              if ('text' in v) return (v.text||'').trim()
-              if ('date' in v) return (v.date||'').trim()
-              if ('name' in v) return (v.name||'').trim()
-              return null
+              if(!field) return null;
+              const v = values.find(n => norm(n.field?.name) === norm(field.name));
+              if(!v) return null;
+              if ('text' in v) return (v.text||'').trim();
+              if ('date' in v) return (v.date||'').trim();
+              if ('name' in v) return (v.name||'').trim();
+              return null;
             }
 
-            const missing = []
-            if(!getValue(fImpact))   missing.push('Impact')
-            if(!getValue(fPlan))     missing.push('Implementation Plan')
-            if(!getValue(fRollback)) missing.push('RollBack Planning')
-            if(!getValue(fPruebas))  missing.push('Test Planning')
-            if(!getValue(fAprob))    missing.push('Approvers')
-            if(!getValue(fStart))    missing.push('Start date (YYYY-MM-DD)')
-            if(!getValue(fTarget))   missing.push('Target date (YYYY-MM-DD)')
+            const missing = [];
+            if(!getValue(fImpact))   missing.push('Impact');
+            if(!getValue(fPlan))     missing.push('Implementation Plan');
+            if(!getValue(fRollback)) missing.push('RollBack Planning');
+            if(!getValue(fPruebas))  missing.push('Test Planning');
+            if(!getValue(fAprob))    missing.push('Approvers');
+            if(!getValue(fStart))    missing.push('Start date (YYYY-MM-DD)');
+            if(!getValue(fTarget))   missing.push('Target date (YYYY-MM-DD)');
 
             if(missing.length){
-              await setSelect(projectId, itemId, fStatusCcc, 'Inbox')
+              await setSelect(projectId, itemId, fStatusCcc, 'Inbox');
               try { 
                 const labelName = context.payload.label.name;
                 await github.rest.issues.removeLabel({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, name: labelName }) 
               } catch(e){}
-              const list = missing.map(m=>`- [ ] ${m}`).join('\n')
+              
+              const list = missing.map(m=>`- [ ] \`${m}\``).join('\n');
+              
+              // --- ESTE ES EL NUEVO COMENTARIO ---
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo:  context.repo.repo,
                 issue_number: issue.number,
-                body: `### Datos adicionales requeridos\nSe etiquetó como **Approved** (USER), pero faltan:\n\n${list}\n\nSe revirtió **Status_CCC → Inbox**. Completa esos campos en el Project y vuelve a etiquetar **approved**.`
-              })
-              return
+                body: `### ❌ Aprobación fallida: Faltan campos
+
+No pude mover este issue a "Approved" porque los siguientes campos están vacíos **en el tablero del proyecto**:
+
+${list}
+
+### Qué hacer:
+1.  **[Haz clic aquí para ir al Proyecto de Usuarios](${userProjUrl})**
+2.  Busca esta tarjeta (Issue #${issue.number}).
+3.  Llena los campos que mencioné arriba.
+4.  Vuelve a este issue y **añade la etiqueta \`approved\` otra vez**.
+
+(Se ha revertido el estado a \`Inbox\` y se ha quitado la etiqueta \`approved\`.)`
+              });
+              return;
             }
 
-            await setSelect(projectId, itemId, fStatusCcc, 'Approved')
+            // Si no faltan campos, aprobar
+            await setSelect(projectId, itemId, fStatusCcc, 'Approved');
+            try { await github.rest.issues.removeLabel({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, name: 'denied' }) } catch(e){}
 
   set-project-status-on-close:
     if: github.event.action == 'closed'
@@ -443,48 +475,48 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const issue = context.payload.issue
-            const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user')
+            const issue = context.payload.issue;
+            const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user');
 
-            const USER_LOGIN = process.env.USER_LOGIN
-            const ORG_LOGIN  = process.env.ORG_LOGIN
-            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10)
-            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10)
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const ORG_LOGIN  = process.env.ORG_LOGIN;
+            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10);
+            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10);
 
             async function getUserProjByNum(n){
               const r = await github.graphql(
                 `query($login:String!){ user(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
                 { login: USER_LOGIN }
-              ).catch(()=>null)
-              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
             async function getOrgProjByNum(n){
-              if(!ORG_LOGIN) return null
+              if(!ORG_LOGIN) return null;
               const r = await github.graphql(
                 `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
                 { login: ORG_LOGIN }
-              ).catch(()=>null)
-              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null
+              ).catch(()=>null);
+              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
 
-            let projectId = null
+            let projectId = null;
             if (hasUser) {
-              projectId = await getUserProjByNum(PN_USER)
+              projectId = await getUserProjByNum(PN_USER);
             } else {
-              projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN)
+              projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
             }
-            if(!projectId) return
+            if(!projectId) return;
 
-            const issueNum = issue.number
+            const issueNum = issue.number;
             const items = await github.graphql(
               `query($projectId:ID!, $q:String!){
                 node(id:$projectId){ ... on ProjectV2 {
                   items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
                 } }
               }`, { projectId, q: String(issueNum) }
-            )
-            const item = items.node.items.nodes.find(n=>n.content?.number===issueNum)
-            if(!item) return
+            );
+            const item = items.node.items.nodes.find(n=>n.content?.number===issueNum);
+            if(!item) return;
 
             const fields = await github.graphql(
               `query($projectId:ID!){
@@ -495,23 +527,23 @@ jobs:
                   } }
                 } }
               }`, { projectId }
-            )
-            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
-            const status = fields.node.fields.nodes.find(f=>norm(f.name)==='status')
-            if(!status) return
+            );
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            const status = fields.node.fields.nodes.find(f=>norm(f.name)==='status');
+            if(!status) return;
 
-            const reason = context.payload.issue.state_reason
-            let optionName = 'Done'
-            if (reason === 'not_planned') optionName = 'Not Planned'
+            const reason = context.payload.issue.state_reason;
+            let optionName = 'Done';
+            if (reason === 'not_planned') optionName = 'Not Planned';
 
-            const opt = (status.options||[]).find(o=>norm(o.name)===norm(optionName) || norm(o.name)==='no planeado')
-            if(!opt) return
+            const opt = (status.options||[]).find(o=>norm(o.name)===norm(optionName) || norm(o.name)==='no planeado');
+            if(!opt) return;
 
             await github.graphql(
               `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
                 updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{singleSelectOptionId:$opt}}){ clientMutationId }
               }`, { projectId, itemId: item.id, fieldId: status.id, opt: opt.id }
-            )
+            );
 
   remove-project-item-on-delete:
     if: github.event.action == 'deleted'
@@ -521,37 +553,37 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const issue = context.payload.issue
-            const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user')
+            const issue = context.payload.issue;
+            const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user');
 
-            const USER_LOGIN = process.env.USER_LOGIN
-            const ORG_LOGIN  = process.env.ORG_LOGIN
-            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10)
-            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10)
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const ORG_LOGIN  = process.env.ORG_LOGIN;
+            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10);
+            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10);
 
             async function getUserProjByNum(n){
               const r = await github.graphql(
                 `query($login:String!){ user(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
                 { login: USER_LOGIN }
-              ).catch(()=>null)
-              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
             async function getOrgProjByNum(n){
-              if(!ORG_LOGIN) return null
+              if(!ORG_LOGIN) return null;
               const r = await github.graphql(
                 `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
                 { login: ORG_LOGIN }
-              ).catch(()=>null)
-              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null
+              ).catch(()=>null);
+              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
 
-            let projectId = null
+            let projectId = null;
             if (hasUser) {
-              projectId = await getUserProjByNum(PN_USER)
+              projectId = await getUserProjByNum(PN_USER);
             } else {
-              projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN)
+              projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
             }
-            if(!projectId) return
+            if(!projectId) return;
 
             const items = await github.graphql(
               `query($projectId:ID!, $q:String!){
@@ -559,12 +591,12 @@ jobs:
                   items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
                 } }
               }`, { projectId, q: String(issue.number) }
-            )
-            const item = items.node.items.nodes.find(n=>n.content?.number===issue.number)
-            if(!item) return
+            );
+            const item = items.node.items.nodes.find(n=>n.content?.number===issue.number);
+            if(!item) return;
 
             await github.graphql(
               `mutation($projectId:ID!, $itemId:ID!){
                 deleteProjectV2Item(input:{ projectId:$projectId, itemId:$itemId }){ clientMutationId }
               }`, { projectId, itemId: item.id }
-            )
+            );
