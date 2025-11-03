@@ -448,17 +448,17 @@ jobs:
                 issue_number: issue.number,
                 body: `### ❌ Aprobación fallida: Faltan campos
 
-No pude mover este issue a "Approved" porque los siguientes campos están vacíos **en el tablero del proyecto**:
-
-${list}
-
-### Qué hacer:
-1.  **[Haz clic aquí para ir al Proyecto de Usuarios](${userProjUrl})**
-2.  Busca esta tarjeta (Issue #${issue.number}).
-3.  Llena los campos que mencioné arriba.
-4.  Vuelve a este issue y **añade la etiqueta \`approved\` otra vez**.
-
-(Se ha revertido el estado a \`Inbox\` y se ha quitado la etiqueta \`approved\`.)`
+            No pude mover este issue a "Approved" porque los siguientes campos están vacíos **en el tablero del proyecto**:
+            
+            ${list}
+            
+            ### Qué hacer:
+            1.  **[Haz clic aquí para ir al Proyecto de Usuarios](${userProjUrl})**
+            2.  Busca esta tarjeta (Issue #${issue.number}).
+            3.  Llena los campos que mencioné arriba.
+            4.  Vuelve a este issue y **añade la etiqueta \`approved\` otra vez**.
+            
+            (Se ha revertido el estado a \`Inbox\` y se ha quitado la etiqueta \`approved\`.)`
               });
               return;
             }
