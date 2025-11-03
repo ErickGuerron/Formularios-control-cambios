@@ -5,6 +5,8 @@ on:
     types: [opened, edited, labeled, closed, deleted]
   issue_comment:
     types: [created]
+  pull_request:
+    types: [opened, edited, synchronize, closed] # Añadido 'closed'
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}-${{ github.event.action }}
@@ -14,6 +16,7 @@ permissions:
   contents: read
   issues: write
   repository-projects: write
+  pull-requests: read
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -380,17 +383,6 @@ jobs:
               return r.node.fieldValues.nodes;
             }
             const by = (fields, names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
-            async function setSelect(projectId,itemId,field,optName){
-              if(!field || !optName) return;
-              const opts = field.options || [];
-              const wanted = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)));
-              if(!wanted) return;
-              await github.graphql(
-                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
-                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
-                }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
-              );
-            }
 
             const projectId = await getUserProjByNum(PN_USER);
             if(!projectId) {
@@ -435,7 +427,6 @@ jobs:
             if(!getValue(fStart))    missing.push('Start date (YYYY-MM-DD)');
             if(!getValue(fTarget))   missing.push('Target date (YYYY-MM-DD)');
 
-            // Guardar datos para el siguiente job
             core.setOutput('has_missing_fields', missing.length > 0 ? 'true' : 'false');
             core.setOutput('missing_fields', JSON.stringify(missing));
             core.setOutput('project_id', projectId);
@@ -452,7 +443,6 @@ jobs:
             const missing = JSON.parse('${{ steps.check_fields.outputs.missing_fields }}');
             const projectUrl = '${{ steps.check_fields.outputs.project_url }}';
             
-            // Verificar si ya existe el formulario
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -468,7 +458,6 @@ jobs:
             
             const list = missing.map(m => `- [ ] \`${m}\``).join('\n');
             
-            // Crear el formulario como comentario
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -573,7 +562,7 @@ jobs:
 
             _🤖 Este formulario fue generado automáticamente. La etiqueta "approved" se removió temporalmente hasta completar la información._
             `
-            });
+                        });
 
       - name: Revert Status and Remove Label
         if: steps.check_fields.outputs.has_missing_fields == 'true'
@@ -585,7 +574,6 @@ jobs:
             const itemId = '${{ steps.check_fields.outputs.item_id }}';
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
             
-            // Obtener campos del proyecto
             const fields = await github.graphql(
               `query($projectId:ID!){
                 node(id:$projectId){ ... on ProjectV2 {
@@ -615,7 +603,6 @@ jobs:
               }
             }
             
-            // Remover label approved
             try {
               const labelName = context.payload.label.name;
               await github.rest.issues.removeLabel({
@@ -637,7 +624,24 @@ jobs:
             const projectId = '${{ steps.check_fields.outputs.project_id }}';
             const itemId = '${{ steps.check_fields.outputs.item_id }}';
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
-            
+
+            async function setSelect(field,optName){
+              if(!field || !optName) return false;
+              const opts = field.options || [];
+              const normalizedOptName = norm(optName);
+              const wanted = opts.find(o=>norm(o.name)===normalizedOptName) || opts.find(o=>norm(o.name).includes(normalizedOptName));
+              if(!wanted) {
+                console.log(`Opción "${normalizedOptName}" no encontrada para el campo "${field.name}"`);
+                return false;
+              }
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+              );
+              return true;
+            }
+
             const fields = await github.graphql(
               `query($projectId:ID!){
                 node(id:$projectId){ ... on ProjectV2 {
@@ -649,23 +653,18 @@ jobs:
               }`, { projectId }
             );
             
-            const fStatusCcc = fields.node.fields.nodes.find(f => {
+            const allFields = fields.node.fields.nodes;
+            
+            const fStatusCcc = allFields.find(f => {
               const fn = norm(f?.name);
               return fn === 'status_ccc' || fn === 'status ccc' || fn.includes('status_ccc');
             });
             
-            if (fStatusCcc) {
-              const opts = fStatusCcc.options || [];
-              const approved = opts.find(o => norm(o.name) === 'approved') || opts.find(o => norm(o.name).includes('approved'));
-              
-              if (approved) {
-                await github.graphql(
-                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
-                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
-                  }`, { projectId, itemId, fieldId: fStatusCcc.id, opt: approved.id }
-                );
-              }
-            }
+            const fStatus = allFields.find(f => norm(f?.name) === 'status');
+            
+            // --- Actualizar ambos status ---
+            await setSelect(fStatusCcc, 'Approved');
+            await setSelect(fStatus, 'Ready');
             
             // Remover label denied si existe
             try {
@@ -686,12 +685,405 @@ jobs:
 
             Todos los campos requeridos están completos. El cambio ha sido aprobado exitosamente.
 
-            **Estado actualizado:** Approved  
+            **Estado actualizado:** Ready
+            **Estado CCC:** Approved
             **Fecha:** ${new Date().toISOString().slice(0, 19).replace('T', ' ')}
 
             Puedes proceder con la implementación según el plan establecido.`
                         });
 
+  process-denial:
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      (github.event.label.name == 'denied' ||
+       github.event.label.name == 'Denegado' ||
+       github.event.label.name == 'denegado')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Status to Not Planned and Denied
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const issue = context.payload.issue;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            const hasUser = (issue.labels || []).some(l => norm(l.name) === 'user');
+            if (!hasUser) {
+              console.log('No es un issue de usuario, saltando.');
+              return;
+            }
+            
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            
+            async function getUserProjByNum(n){
+              const r = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){ projectsV2(first:50){ nodes{ id number } } }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+            
+            async function findItemId(projectId, issueNumber){
+              const r = await github.graphql(
+                `query($projectId:ID!, $q:String!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                  } }
+                }`, { projectId, q: String(issueNumber) }
+              );
+              return r?.node?.items?.nodes?.find(n=>n.content?.number===issueNumber)?.id || null;
+            }
+            
+            const projectId = await getUserProjByNum(PN_USER);
+            if (!projectId) {
+              console.log('Proyecto de usuario no encontrado.');
+              return;
+            }
+            
+            const itemId = await findItemId(projectId, issue.number);
+            if (!itemId) {
+              console.log('Item no encontrado en el proyecto.');
+              return;
+            }
+
+            async function setSelect(field,optName){
+              if(!field || !optName) return false;
+              const opts = field.options || [];
+              const normalizedOptName = norm(optName);
+              const wanted = opts.find(o=>norm(o.name)===normalizedOptName) || opts.find(o=>norm(o.name).includes(normalizedOptName));
+              if(!wanted) {
+                console.log(`Opción "${normalizedOptName}" no encontrada para el campo "${field.name}"`);
+                return false;
+              }
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+              );
+              return true;
+            }
+
+            const fields = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            );
+            
+            const allFields = fields.node.fields.nodes;
+            
+            const fStatusCcc = allFields.find(f => {
+              const fn = norm(f?.name);
+              return fn === 'status_ccc' || fn === 'status ccc' || fn.includes('status_ccc');
+            });
+            
+            const fStatus = allFields.find(f => norm(f?.name) === 'status');
+            
+            // --- Actualizar ambos status a Denied / Not Planned ---
+            await setSelect(fStatusCcc, 'Denied');
+            await setSelect(fStatus, 'Not Planned');
+            
+            // Remover label approved si existe
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                name: 'approved'
+              });
+            } catch(e) {}
+            
+            // Agregar comentario de denegación
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `## ❌ Solicitud Denegada
+
+            El issue ha sido marcado como denegado.
+
+            **Estado actualizado:** Not Planned
+            **Estado CCC:** Denied`
+                        });
+
+  process-pr-link:
+    if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'edited' || github.event.action == 'synchronize') && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Issue Status to In Review
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const pr = context.payload.pull_request;
+            const prBody = pr.body || '';
+            const prTitle = pr.title || '';
+            const prNumber = pr.number;
+            const content = prBody + ' ' + prTitle;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            const issueRegex = /(?:closes|fixes|resolves) #(\d+)|#(\d+)/gi;
+            let match;
+            const issueNumbers = new Set();
+            
+            while ((match = issueRegex.exec(content)) !== null) {
+              issueNumbers.add(match[1] || match[2]);
+            }
+            
+            if (issueNumbers.size === 0) {
+              console.log('PR no linkea a ningun issue.');
+              return;
+            }
+            
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            
+            async function getUserProjByNum(n){
+              const r = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){ projectsV2(first:50){ nodes{ id number } } }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+            
+            async function findItemId(projectId, issueNumber){
+              const r = await github.graphql(
+                `query($projectId:ID!, $q:String!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                  } }
+                }`, { projectId, q: String(issueNumber) }
+              );
+              return r?.node?.items?.nodes?.find(n=>n.content?.number===parseInt(issueNumber,10))?.id || null;
+            }
+
+            async function setSelect(projectId, itemId, field, optName){
+              if(!field || !optName) return false;
+              const opts = field.options || [];
+              const normalizedOptName = norm(optName);
+              const wanted = opts.find(o=>norm(o.name)===normalizedOptName) || opts.find(o=>norm(o.name).includes(normalizedOptName));
+              if(!wanted) {
+                console.log(`Opción "${normalizedOptName}" no encontrada para el campo "${field.name}"`);
+                return false;
+              }
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+              );
+              return true;
+            }
+
+            const projectId = await getUserProjByNum(PN_USER);
+            if (!projectId) {
+              console.log('Proyecto de usuario no encontrado.');
+              return;
+            }
+            
+            const fieldsResponse = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            );
+            const allFields = fieldsResponse.node.fields.nodes;
+            const fStatus = allFields.find(f => norm(f?.name) === 'status');
+            
+            if (!fStatus) {
+              console.log('Campo "Status" no encontrado en el proyecto.');
+              return;
+            }
+
+            for (const issueNum of issueNumbers) {
+              console.log(`Procesando issue #${issueNum}`);
+              
+              let issue;
+              try {
+                issue = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum
+                });
+              } catch (e) {
+                console.log(`No se pudo obtener issue #${issueNum}: ${e.message}`);
+                continue;
+              }
+              
+              const hasUser = (issue.data.labels || []).some(l => norm(l.name) === 'user');
+              if (!hasUser) {
+                console.log(`Issue #${issueNum} no tiene la etiqueta 'user'.`);
+                continue;
+              }
+              
+              const itemId = await findItemId(projectId, issueNum);
+              if (!itemId) {
+                console.log(`Issue #${issueNum} no es un item en el proyecto.`);
+                continue;
+              }
+              
+              const success = await setSelect(projectId, itemId, fStatus, 'In Review');
+              
+              if (success) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum,
+                  body: `## 🔄 En Revisión
+
+            El estado ha sido actualizado a \`In Review\` debido al Pull Request #${prNumber}.`
+                            });
+                          }
+                        }
+
+  # --- NUEVO JOB PARA MANEJAR PR CERRADOS (RECHAZADOS) ---
+  process-pr-closed:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.base_ref == 'main' && github.event.pull_request.merged == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set Issue Status to In Progress
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const pr = context.payload.pull_request;
+            const prBody = pr.body || '';
+            const prTitle = pr.title || '';
+            const prNumber = pr.number;
+            const content = prBody + ' ' + prTitle;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            const issueRegex = /(?:closes|fixes|resolves) #(\d+)|#(\d+)/gi;
+            let match;
+            const issueNumbers = new Set();
+            
+            while ((match = issueRegex.exec(content)) !== null) {
+              issueNumbers.add(match[1] || match[2]);
+            }
+            
+            if (issueNumbers.size === 0) {
+              console.log('PR no linkea a ningun issue.');
+              return;
+            }
+            
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            
+            async function getUserProjByNum(n){
+              const r = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){ projectsV2(first:50){ nodes{ id number } } }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+            
+            async function findItemId(projectId, issueNumber){
+              const r = await github.graphql(
+                `query($projectId:ID!, $q:String!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                  } }
+                }`, { projectId, q: String(issueNumber) }
+              );
+              return r?.node?.items?.nodes?.find(n=>n.content?.number===parseInt(issueNumber,10))?.id || null;
+            }
+
+            async function setSelect(projectId, itemId, field, optName){
+              if(!field || !optName) return false;
+              const opts = field.options || [];
+              const normalizedOptName = norm(optName);
+              const wanted = opts.find(o=>norm(o.name)===normalizedOptName) || opts.find(o=>norm(o.name).includes(normalizedOptName));
+              if(!wanted) {
+                console.log(`Opción "${normalizedOptName}" no encontrada para el campo "${field.name}"`);
+                return false;
+              }
+              await github.graphql(
+                `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                  updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+              );
+              return true;
+            }
+
+            const projectId = await getUserProjByNum(PN_USER);
+            if (!projectId) {
+              console.log('Proyecto de usuario no encontrado.');
+              return;
+            }
+            
+            const fieldsResponse = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            );
+            const allFields = fieldsResponse.node.fields.nodes;
+            const fStatus = allFields.find(f => norm(f?.name) === 'status');
+            
+            if (!fStatus) {
+              console.log('Campo "Status" no encontrado en el proyecto.');
+              return;
+            }
+
+            for (const issueNum of issueNumbers) {
+              console.log(`Procesando issue #${issueNum}`);
+              
+              let issue;
+              try {
+                issue = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum
+                });
+              } catch (e) {
+                console.log(`No se pudo obtener issue #${issueNum}: ${e.message}`);
+                continue;
+              }
+              
+              const hasUser = (issue.data.labels || []).some(l => norm(l.name) === 'user');
+              if (!hasUser) {
+                console.log(`Issue #${issueNum} no tiene la etiqueta 'user'.`);
+                continue;
+              }
+              
+              const itemId = await findItemId(projectId, issueNum);
+              if (!itemId) {
+                console.log(`Issue #${issueNum} no es un item en el proyecto.`);
+                continue;
+              }
+              
+              // --- CAMBIAR STATUS A "IN PROGRESS" ---
+              const success = await setSelect(projectId, itemId, fStatus, 'In Progress');
+              
+              if (success) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNum,
+                  body: `## ⏪ Reabierto
+
+            El Pull Request #${prNumber} fue cerrado sin merge. El estado del issue vuelve a \`In Progress\`.`
+                            });
+                          }
+                        }
+            
   process-ccc-commands:
     if: github.event_name == 'issue_comment' && github.event.action == 'created'
     runs-on: ubuntu-latest
@@ -705,7 +1097,6 @@ jobs:
             const issue = context.payload.issue;
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
             
-            // Verificar si es un issue con label user
             const hasUser = (issue.labels || []).some(l => norm(l.name) === 'user');
             if (!hasUser) {
               console.log('No es un issue de usuario, saltando.');
@@ -716,7 +1107,6 @@ jobs:
             const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
             const userProjUrl = `https://github.com/users/${USER_LOGIN}/projects/${PN_USER}`;
             
-            // Detectar comando
             const cmd = comment.toLowerCase().trim();
             if (!cmd.startsWith('/verificar') && !cmd.startsWith('/actualizar') && !cmd.startsWith('/ayuda')) {
               return;
@@ -915,7 +1305,6 @@ jobs:
             Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
                             });
                             
-                            // Opcional: agregar el label automáticamente
                             await github.rest.issues.addLabels({
                               owner: context.repo.owner,
                               repo: context.repo.repo,
@@ -942,50 +1331,43 @@ jobs:
                             });
                           }
                           return;
-                        }
-                        
-                        if (cmd.startsWith('/actualizar')) {
-                          // Parsear información del issue body o comentarios
-                          const issueBody = issue.body || '';
-                          
-                          // Nueva función "grab" más inteligente
-                          function escRE(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
-                          
-                          function grab(label) {
-                            const L = escRE(label);
-                            const patterns = [
-                              // Patrón 1: ### Label ... (termina en ### o fin)
-                              new RegExp(`^###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n$|$)`, 'im'),
-                              // Patrón 2: (dentro de ```) ### Label ... (termina en ### o ```)
-                              new RegExp(`\`\`\`[\\s\\S]*?###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`|$)`, 'i'),
-                              // Patrón 3: **Label (opcional)** ... (termina en ** o ### o fin)
-                              // m[1] será (opcional), m[2] será el contenido
-                              new RegExp(`\\*\\*${L}\\s*(\\([^)]*\\))?\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?=\\n\\*\\*|\\n###|\\n$|$)`, 'i'),
-                              // Patrón 4: (Solo para Change Type) ... Tipo de cambio: [opción]
-                              new RegExp(`(?:\\*\\*${L}\\s*\\(.*?\\)\\*\\*|###\\s*${L})[\\s\\S]*?:\\[?.*?\\]?\\s*(\\w+)`, 'i')
-                            ];
+            }
+            
+            if (cmd.startsWith('/actualizar')) {
+              const issueBody = issue.body || '';
+              const updated = [];
+              const failed = [];
+              
+              function escRE(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+              
+              function grab(label) {
+                const L = escRE(label);
+                const patterns = [
+                  new RegExp(`^###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n$|$)`, 'im'),
+                  new RegExp(`\`\`\`[\\s\\S]*?###\\s*${L}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`|$)`, 'i'),
+                  new RegExp(`\\*\\*${L}\\s*(\\([^)]*\\))?\\*\\*[\\s\\r\\n]+([\\s\\S]*?)(?=\\n\\*\\*|\\n###|\\n\\nComandos|\\n$|$)`, 'i'),
+                  new RegExp(`(?:\\*\\*${L}\\s*\\(.*?\\)\\*\\*|###\\s*${L})[\\s\\S]*?:\\[?.*?\\]?\\s*(\\w+)`, 'i')
+                ];
                 
                 for (const re of patterns) {
                   let m = comment.match(re);
                   if (!m) m = issueBody.match(re);
-                  
                   if (m) {
-                    // Patrón 3 y 4 guardan en m[2] o m[1] (depende), los otros en m[1]
                     return (m[2] || m[1] || '').trim();
                   }
                 }
                 return '';
               }
-              
-              const changeType = grab('Change Type') || grab('Tipo de cambio');
-              const impact = grab('Impact');
-              const plan = grab('Implementation Plan');
-              const rollback = grab('RollBack Planning');
-              const testing = grab('Test Planning');
-              const approvers = grab('Approvers');
-              
-              const startMatch = (issueBody + comment).match(/(?:Start date|Fecha de inicio)[:\s]+(\d{4}-\d{2}-\d{2})/i);
-              const targetMatch = (issueBody + comment).match(/(?:Target date|Fecha objetivo)[:\s]+(\d{4}-\d{2}-\d{2})/i);
+
+              function normalizeDate(dateStr) {
+                if (!dateStr) return null;
+                const match = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+                if (!match) return null; 
+                const year = match[1];
+                const month = match[2].padStart(2, '0');
+                const day = match[3].padStart(2, '0');
+                return `${year}-${month}-${day}`;
+              }
               
               const fields = await getFields(projectId);
               const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
@@ -999,80 +1381,107 @@ jobs:
               const fStart    = by(['Start date']);
               const fTarget   = by(['Target date']);
               
-              const setText = async(fieldId, val) => {
-                if (!fieldId || !val) return false;
-                await github.graphql(
-                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
-                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
-                  }`, { projectId, itemId, fieldId, val }
-                );
-                return true;
-              };
-              
-              const setDate = async(fieldId, ymd) => {
-                if (!fieldId || !ymd) return false;
-                await github.graphql(
-                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:Date!){
-                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
-                  }`, { projectId, itemId, fieldId, val: ymd }
-                );
-                return true;
-              };
-
-              // Nueva función setSelect
-              async function setSelect(field,optName){
-                if(!field || !optName) return false;
-                const opts = field.options || [];
-                const wanted = opts.find(o=>norm(o.name)===norm(optName)) || opts.find(o=>norm(o.name).includes(norm(optName)));
-                if(!wanted) {
-                  console.log(`Opción "${optName}" no encontrada para el campo "${field.name}"`);
-                  return false;
+              const setText = async(fieldName, field, value) => {
+                if (!field || !value) return;
+                try {
+                  await github.graphql(
+                    `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
+                      updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
+                    }`, { projectId, itemId, fieldId: field.id, val: value }
+                  );
+                  updated.push(fieldName);
+                } catch (e) {
+                  console.log(`Error al actualizar ${fieldName}: ${e.message}`);
+                  failed.push(fieldName);
                 }
-                await github.graphql(
-                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
-                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
-                  }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
-                );
-                return true;
+              };
+              
+              const setDate = async(fieldName, field, ymd) => {
+                if (!field || !ymd) return;
+                try {
+                  await github.graphql(
+                    `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:Date!){
+                      updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
+                    }`, { projectId, itemId, fieldId: field.id, val: ymd }
+                  );
+                  updated.push(fieldName);
+                } catch (e) {
+                  console.log(`Error al actualizar ${fieldName}: ${e.message}`);
+                  failed.push(fieldName);
+                }
+              };
+
+              async function setSelect(fieldName, field, optName){
+                if(!field || !optName) return;
+                
+                const normalizedOptName = norm(optName.replace(/[\*\[\]x\(\)]/g, ''));
+                
+                const opts = field.options || [];
+                const wanted = opts.find(o=>norm(o.name)===normalizedOptName) || opts.find(o=>norm(o.name).includes(normalizedOptName));
+                
+                if(!wanted) {
+                  console.log(`Opción "${normalizedOptName}" no encontrada para el campo "${field.name}"`);
+                  failed.push(fieldName);
+                  return;
+                }
+                
+                try {
+                  await github.graphql(
+                    `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                      updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                    }`, { projectId, itemId, fieldId: field.id, opt: wanted.id }
+                  );
+                  updated.push(fieldName);
+                } catch (e) {
+                  console.log(`Error al actualizar ${fieldName}: ${e.message}`);
+                  failed.push(fieldName);
+                }
               }
               
-              const updated = [];
-              if (await setSelect(fChangeType, changeType)) updated.push('Change Type');
-              if (await setText(fImpact?.id, impact)) updated.push('Impact');
-              if (await setText(fPlan?.id, plan)) updated.push('Implementation Plan');
-              if (await setText(fRollback?.id, rollback)) updated.push('RollBack Planning');
-              if (await setText(fPruebas?.id, testing)) updated.push('Test Planning');
-              if (await setText(fAprob?.id, approvers)) updated.push('Approvers');
-              if (startMatch && await setDate(fStart?.id, startMatch[1])) updated.push('Start date');
-              if (targetMatch && await setDate(fTarget?.id, targetMatch[1])) updated.push('Target date');
-              
+              const changeType = grab('Change Type') || grab('Tipo de cambio');
+              const impact = grab('Impact');
+              const plan = grab('Implementation Plan');
+              const rollback = grab('RollBack Planning');
+              const testing = grab('Test Planning');
+              const approvers = grab('Approvers');
+              const startDate = normalizeDate(grab('Start date') || grab('Fecha de inicio'));
+              const targetDate = normalizeDate(grab('Target date') || grab('Fecha objetivo'));
+
+              await setSelect('Change Type', fChangeType, changeType);
+              await setText('Impact', fImpact, impact);
+              await setText('Implementation Plan', fPlan, plan);
+              await setText('RollBack Planning', fRollback, rollback);
+              await setText('Test Planning', fPruebas, testing);
+              await setText('Approvers', fAprob, approvers);
+              await setDate('Start date', fStart, startDate);
+              await setDate('Target date', fTarget, targetDate);
+
+              let body = '';
               if (updated.length > 0) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  body: `## ✅ Proyecto Actualizado
-
-              Se actualizaron los siguientes campos en el proyecto desde tu comentario:
-
-              ${updated.map(u => `- ✅ ${u}`).join('\n')}
-
-              **[Ver en el proyecto →](${userProjUrl})**
-
-              Ejecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`
-                              });
-                            } else {
-                              await github.rest.issues.createComment({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: issue.number,
-                                body: `## ⚠️ No se encontró información para actualizar
-
-              Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
-
-              **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`
-                              });
+                body += `## ✅ Proyecto Actualizado\n\nSe actualizaron los siguientes campos en el proyecto desde tu comentario:\n\n${updated.map(u => `- ✅ ${u}`).join('\n')}\n\n`;
               }
+              
+              if (failed.length > 0) {
+                body += `## ⚠️ Campos Fallidos\n\nNo se pudieron actualizar los siguientes campos:\n\n${failed.map(f => `- ❌ ${f}`).join('\n')}\n\n`;
+                body += `Por favor, verifica que las opciones del proyecto (como 'Change Type') coincidan con lo que escribiste, o llena estos campos manualmente en el proyecto.\n\n`;
+              }
+              
+              if (updated.length === 0 && failed.length === 0) {
+                 body = `## ⚠️ No se encontró información para actualizar
+
+            Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
+
+            **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`;
+                          } else {
+                            body += `**[Ver en el proyecto →](${userProjUrl})**\n\nEjecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`;
+                          }
+                          
+                          await github.rest.issues.createComment({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            issue_number: issue.number,
+                            body: body
+                          });
             }
 
   set-project-status-on-close:
@@ -1142,9 +1551,11 @@ jobs:
 
             const reason = context.payload.issue.state_reason;
             let optionName = 'Done';
-            if (reason === 'not_planned') optionName = 'Not Planned';
+            if (reason !== 'completed') {
+               optionName = 'Not Planned';
+            }
 
-            const opt = (status.options||[]).find(o=>norm(o.name)===norm(optionName) || norm(o.name)==='no planeado');
+            const opt = (status.options||[]).find(o=>norm(o.name)===norm(optionName) || norm(o.name)==='no planeado' || norm(o.name)==='done');
             if(!opt) return;
 
             await github.graphql(
