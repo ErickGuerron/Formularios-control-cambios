@@ -1,6 +1,6 @@
 name: Project Field Change Listener
 on:
-  project_card:
+  project_card: 
     types: [moved, created, edited]
 permissions:
   contents: read

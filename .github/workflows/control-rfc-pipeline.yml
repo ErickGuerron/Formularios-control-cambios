@@ -3,6 +3,8 @@ name: RFC Controller
 on:
   issues:
     types: [opened, edited, labeled, closed, deleted]
+  issue_comment:
+    types: [created]
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}-${{ github.event.action }}
@@ -24,7 +26,9 @@ env:
 
 jobs:
   process_rfc_on_github:
-    if: github.event.action == 'opened' || github.event.action == 'edited'
+    if: |
+      github.event_name == 'issues' &&
+      (github.event.action == 'opened' || github.event.action == 'edited')
     runs-on: ubuntu-latest
     steps:
       - name: Add labels, Add to Project, and Map Fields
@@ -55,7 +59,7 @@ jobs:
 
             const wanted = new Set(['rfc']);
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar');
-            if (tipo.includes('normal'))                                 wanted.add('tipo:normal');
+            if (tipo.includes('normal'))                                wanted.add('tipo:normal');
             if (tipo.includes('emergencia') || tipo.includes('urgente')) wanted.add('tipo:emergencia');
             if (riesgo.includes('bajo'))  wanted.add('riesgo:bajo');
             if (riesgo.includes('medio')) wanted.add('riesgo:medio');
@@ -175,7 +179,7 @@ jobs:
               ).catch(()=>null);
             }
             const setText = async(projectId,itemId,fieldId,val)=>{
-              if(!projectId || !itemId || !fieldId) return; 
+              if(!projectId || !itemId || !fieldId) return;  
               await github.graphql(
                 `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
                   updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
@@ -241,11 +245,11 @@ jobs:
                 const names = opts.map(n => norm(n));
                 const high  = opts[names.findIndex(n => /high|alto/.test(n))]   ?? opts.find(o=>/high|alto/i.test(o))   ?? 'High';
                 const med   = opts[names.findIndex(n => /medium|medio/.test(n))]?? opts.find(o=>/medium|medio/i.test(o))?? 'Medium';
-                const low   = opts[names.findIndex(n => /low|bajo/.test(n))]    ?? opts.find(o=>/low|bajo/i.test(o))    ?? 'Low';
+                const low   = opts[names.findIndex(n => /low|bajo/.test(n))]   ?? opts.find(o=>/low|bajo/i.test(o))   ?? 'Low';
                 const v = norm(priority);
                 if (/(crit|urg|alta|alto|high)/.test(v))   return high;
                 if (/(med|medio|media|medium|normal)/.test(v)) return med;
-                if (/(baj|baja|low)/.test(v))               return low;
+                if (/(baj|baja|low)/.test(v))              return low;
                 return med;
               }
 
@@ -300,15 +304,17 @@ jobs:
             await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'));
 
   enforce-user-post-approve:
-    if: >
+    if: |
+      github.event_name == 'issues' &&
       github.event.action == 'labeled' &&
       (github.event.label.name == 'approved' ||
-       github.event.label.name == 'Approved' ||
-       github.event.label.name == 'aprobado' ||
-       github.event.label.name == 'Aprobado')
+        github.event.label.name == 'Approved' ||
+        github.event.label.name == 'aprobado' ||
+        github.event.label.name == 'Aprobado')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
+        id: check_fields
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
@@ -322,8 +328,6 @@ jobs:
 
             const USER_LOGIN = process.env.USER_LOGIN;
             const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10);
-            
-            // --- CONSTRUIR LA URL DEL PROYECTO DE USUARIO ---
             const userProjUrl = `https://github.com/users/${USER_LOGIN}/projects/${PN_USER}`;
 
             async function getUserProjByNum(n){
@@ -429,48 +433,607 @@ jobs:
             if(!getValue(fStart))    missing.push('Start date (YYYY-MM-DD)');
             if(!getValue(fTarget))   missing.push('Target date (YYYY-MM-DD)');
 
-            if(missing.length){
-              await setSelect(projectId, itemId, fStatusCcc, 'Inbox');
-              try { 
-                const labelName = context.payload.label.name;
-                await github.rest.issues.removeLabel({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, name: labelName }) 
-              } catch(e){}
+            // Guardar datos para el siguiente job
+            core.setOutput('has_missing_fields', missing.length > 0 ? 'true' : 'false');
+            core.setOutput('missing_fields', JSON.stringify(missing));
+            core.setOutput('project_id', projectId);
+            core.setOutput('item_id', itemId);
+            core.setOutput('project_url', userProjUrl);
+
+      - name: Add CCC Form if Missing Fields
+        if: steps.check_fields.outputs.has_missing_fields == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const issue = context.payload.issue;
+            const missing = JSON.parse('${{ steps.check_fields.outputs.missing_fields }}');
+            const projectUrl = '${{ steps.check_fields.outputs.project_url }}';
+            
+            // Verificar si ya existe el formulario
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number
+            });
+            
+            const hasForm = comments.data.some(c => c.body.includes(''));
+            
+            if (hasForm) {
+              console.log('El formulario CCC ya existe');
+              return;
+            }
+            
+            const list = missing.map(m => `- [ ] \`${m}\``).join('\n');
+            
+            // Crear el formulario como comentario
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `## 📋 Formulario de Control de Cambios (CCC)
+
+            > ⚠️ **Aprobación pendiente - Información requerida**
+            > 
+            > Para completar la aprobación, necesitas llenar los siguientes campos **directamente en el proyecto**.
+
+            ---
+
+            ### ❌ Campos faltantes en el proyecto:
+
+            ${list}
+
+            ---
+
+            ### 📝 Cómo completar la información
+
+            **Opción 1: Llenar en el proyecto (Recomendado)**
+
+            1. **[Haz clic aquí para ir al Proyecto →](${projectUrl})**
+            2. Busca esta tarjeta (Issue #${issue.number})
+            3. Llena los campos indicados arriba haciendo clic en cada celda
+            4. Vuelve a este issue y **comenta** \`/verificar\` para validar
+
+            **Opción 2: Responder en este issue**
+
+            También puedes completar la información directamente aquí. Copia y llena la siguiente plantilla:
+
+            <details>
+            <summary><b>📋 Plantilla de información CCC</b> (Click para expandir)</summary>
+
+            \`\`\`
+            ### Impact
+            Describe el impacto del cambio:
+            - Usuarios afectados: 
+            - Sistemas impactados: 
+            - Nivel de criticidad: [ ] Bajo [ ] Medio [ ] Alto
+
+            ### Implementation Plan
+            Pasos detallados de implementación:
+            1. 
+            2. 
+            3. 
+
+            Recursos necesarios:
+            - Personal: @
+            - Tiempo estimado: ___ horas
+            - Ventana de mantenimiento: [ ] Sí [ ] No
+
+            ### RollBack Planning
+            Procedimiento de rollback:
+            1. 
+            2. 
+            3. 
+
+            Tiempo estimado de rollback: ___ minutos
+            ¿Es completamente reversible? [ ] Sí [ ] No
+
+            ### Test Planning
+            Estrategia de testing:
+            - Tests unitarios: [ ] Completos
+            - Tests de integración: [ ] Completos
+            - Tests E2E: [ ] Completos
+
+            Casos de prueba críticos:
+            1. 
+            2. 
+
+            ### Approvers
+            Aprobadores requeridos:
+            - [ ] Tech Lead: @
+            - [ ] Product Owner: @
+            - [ ] DevOps: @
+            - [ ] Otro: @
+
+            ### Start date
+            Fecha de inicio (YYYY-MM-DD): 
+
+            ### Target date
+            Fecha objetivo (YYYY-MM-DD): 
+            \`\`\`
+
+            **Una vez completado**, comenta: \`/actualizar\` para sincronizar con el proyecto
+
+            </details>
+
+            ---
+
+            ### ✅ Comandos disponibles
+
+            - \`/verificar\` - Verificar si ya se completaron los campos en el proyecto
+            - \`/actualizar\` - Actualizar el proyecto con la información de este issue
+            - \`/ayuda\` - Mostrar ayuda sobre cómo llenar cada campo
+
+            ---
+
+            _🤖 Este formulario fue generado automáticamente. La etiqueta "approved" se removió temporalmente hasta completar la información._
+            `
+            });
+
+      - name: Revert Status and Remove Label
+        if: steps.check_fields.outputs.has_missing_fields == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const projectId = '${{ steps.check_fields.outputs.project_id }}';
+            const itemId = '${{ steps.check_fields.outputs.item_id }}';
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            // Obtener campos del proyecto
+            const fields = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            );
+            
+            const fStatusCcc = fields.node.fields.nodes.find(f => {
+              const fn = norm(f?.name);
+              return fn === 'status_ccc' || fn === 'status ccc' || fn.includes('status_ccc');
+            });
+            
+            if (fStatusCcc) {
+              const opts = fStatusCcc.options || [];
+              const inbox = opts.find(o => norm(o.name) === 'inbox') || opts.find(o => norm(o.name).includes('inbox'));
               
-              const list = missing.map(m=>`- [ ] \`${m}\``).join('\n');
+              if (inbox) {
+                await github.graphql(
+                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                  }`, { projectId, itemId, fieldId: fStatusCcc.id, opt: inbox.id }
+                );
+              }
+            }
+            
+            // Remover label approved
+            try {
+              const labelName = context.payload.label.name;
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                name: labelName
+              });
+            } catch(e) {
+              console.log('No se pudo remover el label:', e.message);
+            }
+
+      - name: Approve if Complete
+        if: steps.check_fields.outputs.has_missing_fields == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const projectId = '${{ steps.check_fields.outputs.project_id }}';
+            const itemId = '${{ steps.check_fields.outputs.item_id }}';
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            const fields = await github.graphql(
+              `query($projectId:ID!){
+                node(id:$projectId){ ... on ProjectV2 {
+                  fields(first:50){ nodes{
+                    ... on ProjectV2FieldCommon { id name }
+                    ... on ProjectV2SingleSelectField { id name options{ id name } }
+                  } }
+                } }
+              }`, { projectId }
+            );
+            
+            const fStatusCcc = fields.node.fields.nodes.find(f => {
+              const fn = norm(f?.name);
+              return fn === 'status_ccc' || fn === 'status ccc' || fn.includes('status_ccc');
+            });
+            
+            if (fStatusCcc) {
+              const opts = fStatusCcc.options || [];
+              const approved = opts.find(o => norm(o.name) === 'approved') || opts.find(o => norm(o.name).includes('approved'));
               
-              // --- ESTE ES EL NUEVO COMENTARIO ---
+              if (approved) {
+                await github.graphql(
+                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $opt:String!){
+                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ singleSelectOptionId:$opt } }){ clientMutationId }
+                  }`, { projectId, itemId, fieldId: fStatusCcc.id, opt: approved.id }
+                );
+              }
+            }
+            
+            // Remover label denied si existe
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                name: 'denied'
+              });
+            } catch(e) {}
+            
+            // Agregar comentario de éxito
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `## ✅ Aprobación Completada
+
+            Todos los campos requeridos están completos. El cambio ha sido aprobado exitosamente.
+
+            **Estado actualizado:** Approved  
+            **Fecha:** ${new Date().toISOString().slice(0, 19).replace('T', ' ')}
+
+            Puedes proceder con la implementación según el plan establecido.`
+                        });
+
+  process-ccc-commands:
+    if: github.event_name == 'issue_comment' && github.event.action == 'created'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process Commands
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECTS_PAT }}
+          script: |
+            const comment = context.payload.comment.body;
+            const issue = context.payload.issue;
+            const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase();
+            
+            // Verificar si es un issue con label user
+            const hasUser = (issue.labels || []).some(l => norm(l.name) === 'user');
+            if (!hasUser) {
+              console.log('No es un issue de usuario, saltando.');
+              return;
+            }
+            
+            const USER_LOGIN = process.env.USER_LOGIN;
+            const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            const userProjUrl = `https://github.com/users/${USER_LOGIN}/projects/${PN_USER}`;
+            
+            // Detectar comando
+            const cmd = comment.toLowerCase().trim();
+            if (!cmd.startsWith('/verificar') && !cmd.startsWith('/actualizar') && !cmd.startsWith('/ayuda')) {
+              return;
+            }
+            
+            async function getUserProjByNum(n){
+              const r = await github.graphql(
+                `query($login:String!){
+                  user(login:$login){ projectsV2(first:50){ nodes{ id number } } }
+                }`, { login: USER_LOGIN }
+              ).catch(()=>null);
+              return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+            
+            async function findItemId(projectId, issueNumber){
+              const r = await github.graphql(
+                `query($projectId:ID!, $q:String!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    items(first:50, query:$q){ nodes{ id content{ ... on Issue { number } } } }
+                  } }
+                }`, { projectId, q: String(issueNumber) }
+              );
+              return r.node.items.nodes.find(n=>n.content?.number===issueNumber)?.id || null;
+            }
+            
+            async function getFields(projectId){
+              const r = await github.graphql(
+                `query($projectId:ID!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    fields(first:100){ nodes{
+                      ... on ProjectV2FieldCommon { id name dataType }
+                      ... on ProjectV2SingleSelectField { id name options { id name } }
+                    } }
+                  } }
+                }`, { projectId }
+              );
+              return r.node.fields.nodes;
+            }
+            
+            async function getFieldValues(itemId){
+              const r = await github.graphql(
+                `query($itemId:ID!){
+                  node(id:$itemId){
+                    ... on ProjectV2Item {
+                      fieldValues(first:100){
+                        nodes{
+                          ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { id name } } }
+                          ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { id name } } }
+                          ... on ProjectV2ItemFieldSingleSelectValue { name optionId field { ... on ProjectV2FieldCommon { id name } } }
+                        }
+                      }
+                    }
+                  }
+                }`, { itemId }
+              );
+              return r.node.fieldValues.nodes;
+            }
+            
+            const projectId = await getUserProjByNum(PN_USER);
+            if (!projectId) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
-                repo:  context.repo.repo,
+                repo: context.repo.repo,
                 issue_number: issue.number,
-                body: `### ❌ Aprobación fallida: Faltan campos
-
-            No pude mover este issue a "Approved" porque los siguientes campos están vacíos **en el tablero del proyecto**:
-            
-            ${list}
-            
-            ### Qué hacer:
-            1.  **[Haz clic aquí para ir al Proyecto de Usuarios](${userProjUrl})**
-            2.  Busca esta tarjeta (Issue #${issue.number}).
-            3.  Llena los campos que mencioné arriba.
-            4.  Vuelve a este issue y **añade la etiqueta \`approved\` otra vez**.
-            
-            (Se ha revertido el estado a \`Inbox\` y se ha quitado la etiqueta \`approved\`.)`
+                body: '❌ No se pudo encontrar el proyecto de usuarios.'
               });
               return;
             }
+            
+            const itemId = await findItemId(projectId, issue.number);
+            if (!itemId) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: '❌ No se pudo encontrar este issue en el proyecto.'
+              });
+              return;
+            }
+            
+            if (cmd.startsWith('/ayuda')) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `## 📚 Ayuda - Formulario CCC
 
-            // Si no faltan campos, aprobar
-            await setSelect(projectId, itemId, fStatusCcc, 'Approved');
-            try { await github.rest.issues.removeLabel({ owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, name: 'denied' }) } catch(e){}
+            ### Descripción de campos requeridos:
+
+            **Impact (Impacto)**
+            - Describe qué sistemas, usuarios o procesos se verán afectados
+            - Indica el nivel de criticidad (Bajo/Medio/Alto)
+            - Ejemplo: "Afecta a 500 usuarios del módulo de facturación. Criticidad: Alta"
+
+            **Implementation Plan (Plan de implementación)**
+            - Lista los pasos específicos para implementar el cambio
+            - Incluye recursos necesarios (personas, herramientas)
+            - Especifica duración estimada y ventana de mantenimiento
+            - Ejemplo:
+              1. Backup de base de datos (30 min)
+              2. Deploy de nueva versión (15 min)
+              3. Migración de datos (1 hora)
+
+            **RollBack Planning (Plan de reversa)**
+            - Describe cómo revertir el cambio si algo sale mal
+            - Incluye comandos o scripts específicos
+            - Indica tiempo estimado de recuperación
+            - Especifica si es completamente reversible
+
+            **Test Planning (Plan de pruebas)**
+            - Detalla la estrategia de testing
+            - Lista casos de prueba críticos
+            - Incluye tests unitarios, integración y E2E
+            - Define criterios de éxito
+
+            **Approvers (Aprobadores)**
+            - Menciona (@usuario) a todas las personas que deben aprobar
+            - Típicamente: Tech Lead, Product Owner, DevOps
+            - Ejemplo: @tech-lead @product-owner @devops-team
+
+            **Start date (Fecha de inicio)**
+            - Fecha en formato YYYY-MM-DD
+            - Ejemplo: 2025-11-15
+
+            **Target date (Fecha objetivo)**
+            - Fecha límite en formato YYYY-MM-DD
+            - Ejemplo: 2025-11-30
+
+            ### Comandos disponibles:
+            - \`/verificar\` - Verifica si completaste los campos en el proyecto
+            - \`/actualizar\` - Actualiza el proyecto con info de este issue
+            - \`/ayuda\` - Muestra esta ayuda`
+              });
+              return;
+            }
+            
+            if (cmd.startsWith('/verificar')) {
+              const fields = await getFields(projectId);
+              const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
+              
+              const fImpact   = by(['Impact']);
+              const fPlan     = by(['Implementation Plan']);
+              const fRollback = by(['RollBack Planning','Rollback Plan']);
+              const fPruebas  = by(['Test Planning']);
+              const fAprob    = by(['Approvers']);
+              const fStart    = by(['Start date']);
+              const fTarget   = by(['Target date']);
+              
+              const values = await getFieldValues(itemId);
+              function getValue(field){
+                if(!field) return null;
+                const v = values.find(n => norm(n.field?.name) === norm(field.name));
+                if(!v) return null;
+                if ('text' in v) return (v.text||'').trim();
+                if ('date' in v) return (v.date||'').trim();
+                if ('name' in v) return (v.name||'').trim();
+                return null;
+              }
+              
+              const missing = [];
+              const complete = [];
+              
+              const checkField = (field, name) => {
+                const val = getValue(field);
+                if (!val) {
+                  missing.push(name);
+                } else {
+                  complete.push(`${name}: ✅`);
+                }
+              };
+              
+              checkField(fImpact, 'Impact');
+              checkField(fPlan, 'Implementation Plan');
+              checkField(fRollback, 'RollBack Planning');
+              checkField(fPruebas, 'Test Planning');
+              checkField(fAprob, 'Approvers');
+              checkField(fStart, 'Start date');
+              checkField(fTarget, 'Target date');
+              
+              if (missing.length === 0) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `## ✅ Verificación Completa
+
+            ¡Excelente! Todos los campos requeridos están completos:
+
+            ${complete.map(c => `- ${c}`).join('\n')}
+
+            Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
+                            });
+                    
+                    // Opcional: agregar el label automáticamente
+                    await github.rest.issues.addLabels({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issue.number,
+                      labels: ['approved']
+                      });
+                  } else {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: issue.number,
+                      body: `## ⚠️ Campos Faltantes
+
+            Aún faltan los siguientes campos en el proyecto:
+
+            ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
+
+            **[Ir al proyecto para completarlos →](${userProjUrl})**
+
+                  Los siguientes campos ya están completos:
+                  ${complete.map(c => `- ${c}`).join('\n')}
+
+            Una vez completados, ejecuta \`/verificar\` nuevamente.`
+                });
+              }
+              return;
+            }
+            
+            if (cmd.startsWith('/actualizar')) {
+              // Parsear información del issue body o comentarios
+              const issueBody = issue.body || '';
+              
+              function extractSection(label) {
+                const patterns = [
+                  new RegExp(`###\\s*${label}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`\\n###|$)`, 'i'),
+                  new RegExp(`\`\`\`[\\s\\S]*?###\\s*${label}\\s*\\n+([\\s\\S]*?)(?=\\n###|\\n\`\`\`|$)`, 'i')
+                ];
+                for (const re of patterns) {
+                  const m = issueBody.match(re) || comment.match(re);
+                  if (m) return m[1].trim();
+                }
+                return '';
+              }
+              
+              const impact = extractSection('Impact');
+              const plan = extractSection('Implementation Plan');
+              const rollback = extractSection('RollBack Planning');
+              const testing = extractSection('Test Planning');
+              const approvers = extractSection('Approvers');
+              const startMatch = (issueBody + comment).match(/Start date[:\s]+(\d{4}-\d{2}-\d{2})/i);
+              const targetMatch = (issueBody + comment).match(/Target date[:\s]+(\d{4}-\d{2}-\d{2})/i);
+              
+              const fields = await getFields(projectId);
+              const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
+              
+              const fImpact   = by(['Impact']);
+              const fPlan     = by(['Implementation Plan']);
+              const fRollback = by(['RollBack Planning','Rollback Plan']);
+              const fPruebas  = by(['Test Planning']);
+              const fAprob    = by(['Approvers']);
+              const fStart    = by(['Start date']);
+              const fTarget   = by(['Target date']);
+              
+              const setText = async(fieldId, val) => {
+                if (!fieldId || !val) return false;
+                await github.graphql(
+                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:String!){
+                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ text:$val } }){ clientMutationId }
+                  }`, { projectId, itemId, fieldId, val }
+                );
+                return true;
+              };
+              
+              const setDate = async(fieldId, ymd) => {
+                if (!fieldId || !ymd) return false;
+                await github.graphql(
+                  `mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $val:Date!){
+                    updateProjectV2ItemFieldValue(input:{ projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{ date:$val } }){ clientMutationId }
+                  }`, { projectId, itemId, fieldId, val: ymd }
+                );
+                return true;
+              };
+              
+              const updated = [];
+              if (await setText(fImpact?.id, impact)) updated.push('Impact');
+              if (await setText(fPlan?.id, plan)) updated.push('Implementation Plan');
+              if (await setText(fRollback?.id, rollback)) updated.push('RollBack Planning');
+              if (await setText(fPruebas?.id, testing)) updated.push('Test Planning');
+              if (await setText(fAprob?.id, approvers)) updated.push('Approvers');
+              if (startMatch && await setDate(fStart?.id, startMatch[1])) updated.push('Start date');
+              if (targetMatch && await setDate(fTarget?.id, targetMatch[1])) updated.push('Target date');
+              
+              if (updated.length > 0) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `## ✅ Proyecto Actualizado
+
+            Se actualizaron los siguientes campos en el proyecto:
+
+            ${updated.map(u => `- ✅ ${u}`).join('\n')}
+
+            **[Ver en el proyecto →](${userProjUrl})**
+
+            Ejecuta \`/verificar\` para confirmar que todo esté completo.`
+                            });
+                          } else {
+                            await github.rest.issues.createComment({
+                              owner: context.repo.owner,
+                              repo: context.repo.repo,
+                              issue_number: issue.number,
+                              body: `## ⚠️ No se encontró información para actualizar
+
+            Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
+
+            Usa \`/ayuda\` para ver cómo llenar correctamente cada campo.`
+                });
+              }
+            }
 
   set-project-status-on-close:
-    if: github.event.action == 'closed'
+    if: github.event_name == 'issues' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
             const issue = context.payload.issue;
             const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user');
@@ -517,7 +1080,7 @@ jobs:
 
             const fields = await github.graphql(
               `query($projectId:ID!){
-                node(id:$projectId){ ... on ProjectV2 {
+                node(id:$projectId){ ... on ProjectVV2 {
                   fields(first:50){ nodes{
                     ... on ProjectV2FieldCommon { id name }
                     ... on ProjectV2SingleSelectField { id name options{ id name } }
@@ -543,12 +1106,12 @@ jobs:
             );
 
   remove-project-item-on-delete:
-    if: github.event.action == 'deleted'
+    if: github.event_name == 'issues' && github.event.action == 'deleted'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
             const issue = context.payload.issue;
             const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user');
