@@ -750,6 +750,17 @@ jobs:
               return;
             }
 
+            if (issue.state === 'open') {
+              console.log('El issue está abierto. Cerrando como "not_planned".');
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'not_planned'
+              });
+            }
+
             async function setSelect(field,optName){
               if(!field || !optName) return false;
               const opts = field.options || [];
