@@ -11,6 +11,7 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  repository-projects: write
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -18,7 +19,7 @@ env:
   USER_LOGIN: ErickGuerron
   PROJECT_NUMBER: 1
   PROJECT_TITLE: Formularios-control-cambios
-  PROJECT_NUMBER_USER: 2
+  PROJECT_NUMBER_USER: 3
   PROJECT_TITLE_USER: Formularios-Usuarios
 
 jobs:
@@ -29,7 +30,7 @@ jobs:
       - name: Add labels, Add to Project, and Map Fields
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }}
+          github-token: ${{ github.token }}
           script: |
             const issue = context.payload.issue
             const owner = context.repo.owner
@@ -50,8 +51,9 @@ jobs:
               return '';
             }
 
-            const tipo   = (grab('Tipo de cambio') || '').toLowerCase()
-            const riesgo = (grab('Riesgo') || '').toLowerCase()
+            const tipo       = (grab('Tipo de cambio') || '').toLowerCase()
+            const riesgo     = (grab('Riesgo') || '').toLowerCase()
+            const prioridad  = grab('priorityname') || grab('Prioridad') || grab('Priority') || ''
 
             const wanted = new Set(['rfc'])
             if (tipo.includes('estándar') || tipo.includes('estandar')) wanted.add('tipo:estandar')
@@ -202,14 +204,6 @@ jobs:
             const vSolic    = grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester')
             const vMotivo   = grab('Motivo de cambio')
 
-            function mapReason(val) {
-              const v = norm(val)
-              if (['bug','error','correccion','corrección','fix','bugfix','fallo'].some(s=>v.includes(s))) return 'error correction'
-              if (['mejora','feature','funcional','nueva funcionalidad','implementacion','implementación','funcion'].some(s=>v.includes(s))) return 'functional improvement'
-              if (['cosmetico','cosmético','ui','visual','ux','apariencia'].some(s=>v.includes(s))) return 'cosmetic change'
-              return 'other'
-            }
-
             if (hasUserLabel) {
               const projectIdUser = await findProjectV2User()
               if (!projectIdUser) return
@@ -217,24 +211,26 @@ jobs:
               const fieldsUser = await getFields(projectIdUser)
               const byU = (names)=> names.map(n=>fieldsUser.find(f=>norm(f?.name)===norm(n))).find(Boolean)
 
-              const fStatusU     = byU(['Status'])
-              const fStatusCccU  = byU(['Status_CCC','Status CCC','status_ccc'])
-              const fReasonChgU  = byU(['Reason for change'])
-              const fRiesgoU     = byU(['Risk','Riesgo'])
-              const fImpactoU    = byU(['Impact','Impacto'])
-              const fPlanU       = byU(['Implementation Plan','Plan de implementación'])
-              const fRollbackU   = byU(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
-              const fPruebasU    = byU(['Test Planning','Plan de pruebas'])
-              const fAprobU      = byU(['Approvers'])
-              const fSolicU      = byU(['Solicitor','Solicitante','Applicant','Requester'])
-              const fStartU      = byU(['Start date','Init'])
-              const fTargetU     = byU(['Target date','Completion'])
+              const fStatusU      = byU(['Status'])
+              const fStatusCccU   = byU(['Status_CCC','Status CCC','status_ccc'])
+              const fChangeTypeU  = byU(['Change Type','Tipo de cambio'])
+              const fRiesgoU      = byU(['Risk','Riesgo'])
+              const fImpactoU     = byU(['Impact','Impacto'])
+              const fPlanU        = byU(['Implementation Plan','Plan de implementación'])
+              const fRollbackU    = byU(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
+              const fPruebasU     = byU(['Test Planning','Plan de pruebas'])
+              const fAprobU       = byU(['Approvers'])
+              const fSolicU       = byU(['Solicitor','Solicitante','Applicant','Requester'])
+              const fStartU       = byU(['Start date','Init'])
+              const fTargetU      = byU(['Target date','Completion'])
 
               if (context.payload.action === 'opened') {
                 await setSelect(projectIdUser, itemIdUser, fStatusU, 'Backlog')
                 await setSelect(projectIdUser, itemIdUser, fStatusCccU, 'Inbox')
               }
-              await setSelect(projectIdUser, itemIdUser, fReasonChgU, mapReason(vMotivo))
+
+              const changeTypeValue = prioridad || tipo
+              await setSelect(projectIdUser, itemIdUser, fChangeTypeU, changeTypeValue)
               await setSelect(projectIdUser, itemIdUser, fRiesgoU, riesgo)
               await setText  (projectIdUser, itemIdUser, fImpactoU?.id, vImpacto)
               await setText  (projectIdUser, itemIdUser, fPlanU?.id,    vPlan)
@@ -286,7 +282,7 @@ jobs:
     steps:
       - uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }}
+          github-token: ${{ github.token }}
           script: |
             const issue = context.payload.issue
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
@@ -421,7 +417,7 @@ jobs:
     steps:
       - uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }}
+          github-token: ${{ github.token }}
           script: |
             const issue = context.payload.issue
             const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user')
@@ -499,7 +495,7 @@ jobs:
     steps:
       - uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }}
+          github-token: ${{ github.token }}
           script: |
             const issue = context.payload.issue
             const hasUser = (issue.labels || []).some(l => (l.name||'').toLowerCase()==='user')

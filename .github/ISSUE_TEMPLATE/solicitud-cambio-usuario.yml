@@ -36,8 +36,12 @@ body:
   - type: dropdown
     id: motivo_cambio
     attributes:
-      label: "Motivo de cambio *"
-      options: ["Funcionalidad nueva","Mejora","Corrección","Documentación","Otro"]
+      label: Reason for change
+      options:
+        - error correction
+        - functional improvement
+        - cosmetic change
+        - other
     validations:
       required: true
 
