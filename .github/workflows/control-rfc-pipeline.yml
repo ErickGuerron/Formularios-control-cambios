@@ -5,8 +5,8 @@ on:
     types: [opened, edited, labeled, closed, deleted]
 
 concurrency:
-  group: rfc-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  group: rfc-${{ github.event.issue.number }}-${{ github.event.action }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ env:
 
 jobs:
   process_rfc_on_github:
-    if: github.event.action == 'opened' || github.event.action == 'edited'
+    if: github.event.action == 'opened' || github.event.action == 'edited' || github.event.action == 'labeled'
     runs-on: ubuntu-latest
     steps:
       - name: Add labels, Add to Project, and Map Fields
