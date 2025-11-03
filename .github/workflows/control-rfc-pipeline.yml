@@ -6,7 +6,7 @@ on:
   issue_comment:
     types: [created]
   pull_request:
-    types: [opened, edited, synchronize, closed] # Añadido 'closed'
+    types: [opened, edited, synchronize, closed]
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}-${{ github.event.action }}
@@ -16,7 +16,7 @@ permissions:
   contents: read
   issues: write
   repository-projects: write
-  pull-requests: read
+  pull-requests: read # Dejar en 'read', ya que 'issues: write' nos permite comentar en PRs
 
 env:
   PROJECT_URL: https://github.com/users/ErickGuerron/projects/1
@@ -28,6 +28,7 @@ env:
   PROJECT_TITLE_USER: Formularios-Usuarios
 
 jobs:
+  # --- Job: process_rfc_on_github (Sin cambios) ---
   process_rfc_on_github:
     if: |
       github.event_name == 'issues' &&
@@ -306,6 +307,7 @@ jobs:
             await setText  (projectIdMain, itemIdMain, fAprobM?.id,   grab('Aprobadores requeridos') || grab('Approvers'));
             await setText  (projectIdMain, itemIdMain, fSolicM?.id,   grab('Solicitante') || grab('Solicitor') || grab('Applicant') || grab('Requester'));
 
+  # --- Job: enforce-user-post-approve (Sin cambios) ---
   enforce-user-post-approve:
     if: |
       github.event_name == 'issues' &&
@@ -662,11 +664,9 @@ jobs:
             
             const fStatus = allFields.find(f => norm(f?.name) === 'status');
             
-            // --- Actualizar ambos status ---
             await setSelect(fStatusCcc, 'Approved');
             await setSelect(fStatus, 'Ready');
             
-            // Remover label denied si existe
             try {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
@@ -676,7 +676,6 @@ jobs:
               });
             } catch(e) {}
             
-            // Agregar comentario de éxito
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -692,6 +691,7 @@ jobs:
             Puedes proceder con la implementación según el plan establecido.`
                         });
 
+  # --- Job: process-denial (Sin cambios) ---
   process-denial:
     if: |
       github.event_name == 'issues' &&
@@ -798,11 +798,9 @@ jobs:
             
             const fStatus = allFields.find(f => norm(f?.name) === 'status');
             
-            // --- Actualizar ambos status a Denied / Not Planned ---
             await setSelect(fStatusCcc, 'Denied');
             await setSelect(fStatus, 'Not Planned');
             
-            // Remover label approved si existe
             try {
               await github.rest.issues.removeLabel({
                 owner: context.repo.owner,
@@ -812,19 +810,19 @@ jobs:
               });
             } catch(e) {}
             
-            // Agregar comentario de denegación
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
               body: `## ❌ Solicitud Denegada
 
-            El issue ha sido marcado como denegado.
+            El issue ha sido marcado como denegado y cerrado.
 
             **Estado actualizado:** Not Planned
             **Estado CCC:** Denied`
                         });
 
+  # --- Job: process-pr-link (MODIFICADO para comentar sobre issues cerrados) ---
   process-pr-link:
     if: github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'edited' || github.event.action == 'synchronize') && github.base_ref == 'main'
     runs-on: ubuntu-latest
@@ -855,7 +853,9 @@ jobs:
             }
             
             const USER_LOGIN = process.env.USER_LOGIN;
-            const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            const ORG_LOGIN  = process.env.ORG_LOGIN;
+            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10);
+            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10);
             
             async function getUserProjByNum(n){
               const r = await github.graphql(
@@ -864,6 +864,15 @@ jobs:
                 }`, { login: USER_LOGIN }
               ).catch(()=>null);
               return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+
+            async function getOrgProjByNum(n){
+              if(!ORG_LOGIN) return null;
+              const r = await github.graphql(
+                `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: ORG_LOGIN }
+              ).catch(()=>null);
+              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
             
             async function findItemId(projectId, issueNumber){
@@ -875,6 +884,20 @@ jobs:
                 }`, { projectId, q: String(issueNumber) }
               );
               return r?.node?.items?.nodes?.find(n=>n.content?.number===parseInt(issueNumber,10))?.id || null;
+            }
+
+            async function getFields(projectId){
+              const r = await github.graphql(
+                `query($projectId:ID!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    fields(first:50){ nodes{
+                      ... on ProjectV2FieldCommon { id name }
+                      ... on ProjectV2SingleSelectField { id name options{ id name } }
+                    } }
+                  } }
+                }`, { projectId }
+              );
+              return r?.node?.fields?.nodes || [];
             }
 
             async function setSelect(projectId, itemId, field, optName){
@@ -893,30 +916,9 @@ jobs:
               );
               return true;
             }
-
-            const projectId = await getUserProjByNum(PN_USER);
-            if (!projectId) {
-              console.log('Proyecto de usuario no encontrado.');
-              return;
-            }
             
-            const fieldsResponse = await github.graphql(
-              `query($projectId:ID!){
-                node(id:$projectId){ ... on ProjectV2 {
-                  fields(first:50){ nodes{
-                    ... on ProjectV2FieldCommon { id name }
-                    ... on ProjectV2SingleSelectField { id name options{ id name } }
-                  } }
-                } }
-              }`, { projectId }
-            );
-            const allFields = fieldsResponse.node.fields.nodes;
-            const fStatus = allFields.find(f => norm(f?.name) === 'status');
-            
-            if (!fStatus) {
-              console.log('Campo "Status" no encontrado en el proyecto.');
-              return;
-            }
+            // Colección de comentarios para no repetir
+            const prComments = new Map();
 
             for (const issueNum of issueNumbers) {
               console.log(`Procesando issue #${issueNum}`);
@@ -932,16 +934,63 @@ jobs:
                 console.log(`No se pudo obtener issue #${issueNum}: ${e.message}`);
                 continue;
               }
+
+              // --- ¡NUEVA LÓGICA PARA ISSUES CERRADOS! ---
+              if (issue.data.state !== 'open') {
+                console.log(`Issue #${issueNum} ya está cerrado. Verificando motivo...`);
+                
+                const hasDeniedLabel = (issue.data.labels || []).some(l => norm(l.name) === 'denied');
+                const reason = issue.data.state_reason;
+                let commentBody = '';
+
+                if (hasDeniedLabel) {
+                  commentBody = `⚠️ **Referencia a Issue Denegado:** El Issue #${issueNum} (referenciado en este PR) fue denegado y está cerrado.`;
+                } else if (reason === 'not_planned') {
+                  commentBody = `ℹ️ **Referencia a Issue No Planeado:** El Issue #${issueNum} (referenciado en este PR) está cerrado como "No Planeado" (pendiente de revisión).`;
+                } else if (reason === 'completed') {
+                  commentBody = `✅ **Referencia a Issue Completado:** El Issue #${issueNum} (referenciado en este PR) ya fue completado.`;
+                }
+                
+                if (commentBody && !prComments.has(commentBody)) {
+                  prComments.set(commentBody, true);
+                }
+                
+                continue; // Saltar al siguiente issue, no procesar este
+              }
               
-              const hasUser = (issue.data.labels || []).some(l => norm(l.name) === 'user');
-              if (!hasUser) {
-                console.log(`Issue #${issueNum} no tiene la etiqueta 'user'.`);
+              const hasRfc = (issue.data.labels || []).some(l => norm(l.name) === 'rfc');
+              if (!hasRfc) {
+                console.log(`Issue #${issueNum} no tiene la etiqueta 'rfc'. Saltando.`);
                 continue;
               }
               
+              const hasUser = (issue.data.labels || []).some(l => norm(l.name) === 'user');
+              
+              let projectId = null;
+              if (hasUser) {
+                projectId = await getUserProjByNum(PN_USER);
+                console.log(`Issue #${issueNum} es de 'user'. Buscando en proyecto USER.`);
+              } else {
+                projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
+                console.log(`Issue #${issueNum} es un RFC normal. Buscando en proyecto MAIN/ORG.`);
+              }
+              
+              if(!projectId) {
+                console.log(`No se pudo encontrar un ID de proyecto (MAIN o USER) para issue #${issueNum}.`);
+                continue;
+              }
+
               const itemId = await findItemId(projectId, issueNum);
               if (!itemId) {
                 console.log(`Issue #${issueNum} no es un item en el proyecto.`);
+                continue;
+              }
+
+              const allFields = await getFields(projectId);
+              const fStatus = allFields.find(f => norm(f?.name) === 'status');
+              
+              if (!fStatus) {
+                console.log(`Campo "Status" no encontrado en el proyecto (ID: ${projectId}).`);
                 continue;
               }
               
@@ -954,12 +1003,23 @@ jobs:
                   issue_number: issueNum,
                   body: `## 🔄 En Revisión
 
-            El estado ha sido actualizado a \`In Review\` debido al Pull Request #${prNumber}.`
-                            });
-                          }
-                        }
+                El estado ha sido actualizado a \`In Review\` debido al Pull Request #${prNumber}.`
+                                });
+                              }
+                            }
+                            
+                            // Publicar los comentarios en el PR
+                            if (prComments.size > 0) {
+                              const finalComment = Array.from(prComments.keys()).join('\n\n');
+                              await github.rest.issues.createComment({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: prNumber,
+                                body: finalComment
+                              });
+            }
 
-  # --- NUEVO JOB PARA MANEJAR PR CERRADOS (RECHAZADOS) ---
+  # --- Job: process-pr-closed (MODIFICADO para filtrar por 'rfc') ---
   process-pr-closed:
     if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.base_ref == 'main' && github.event.pull_request.merged == false
     runs-on: ubuntu-latest
@@ -990,7 +1050,9 @@ jobs:
             }
             
             const USER_LOGIN = process.env.USER_LOGIN;
-            const PN_USER = parseInt(process.env.PROJECT_NUMBER_USER || '0', 10);
+            const ORG_LOGIN  = process.env.ORG_LOGIN;
+            const PN_MAIN    = parseInt(process.env.PROJECT_NUMBER,10);
+            const PN_USER    = parseInt(process.env.PROJECT_NUMBER_USER||'0',10);
             
             async function getUserProjByNum(n){
               const r = await github.graphql(
@@ -999,6 +1061,15 @@ jobs:
                 }`, { login: USER_LOGIN }
               ).catch(()=>null);
               return r?.user?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
+            }
+
+            async function getOrgProjByNum(n){
+              if(!ORG_LOGIN) return null;
+              const r = await github.graphql(
+                `query($login:String!){ organization(login:$login){ projectsV2(first:50){ nodes{ id number } } } }`,
+                { login: ORG_LOGIN }
+              ).catch(()=>null);
+              return r?.organization?.projectsV2?.nodes?.find(x=>x.number===n)?.id || null;
             }
             
             async function findItemId(projectId, issueNumber){
@@ -1010,6 +1081,20 @@ jobs:
                 }`, { projectId, q: String(issueNumber) }
               );
               return r?.node?.items?.nodes?.find(n=>n.content?.number===parseInt(issueNumber,10))?.id || null;
+            }
+            
+            async function getFields(projectId){
+              const r = await github.graphql(
+                `query($projectId:ID!){
+                  node(id:$projectId){ ... on ProjectV2 {
+                    fields(first:50){ nodes{
+                      ... on ProjectV2FieldCommon { id name }
+                      ... on ProjectV2SingleSelectField { id name options{ id name } }
+                    } }
+                  } }
+                }`, { projectId }
+              );
+              return r?.node?.fields?.nodes || [];
             }
 
             async function setSelect(projectId, itemId, field, optName){
@@ -1029,30 +1114,6 @@ jobs:
               return true;
             }
 
-            const projectId = await getUserProjByNum(PN_USER);
-            if (!projectId) {
-              console.log('Proyecto de usuario no encontrado.');
-              return;
-            }
-            
-            const fieldsResponse = await github.graphql(
-              `query($projectId:ID!){
-                node(id:$projectId){ ... on ProjectV2 {
-                  fields(first:50){ nodes{
-                    ... on ProjectV2FieldCommon { id name }
-                    ... on ProjectV2SingleSelectField { id name options{ id name } }
-                  } }
-                } }
-              }`, { projectId }
-            );
-            const allFields = fieldsResponse.node.fields.nodes;
-            const fStatus = allFields.find(f => norm(f?.name) === 'status');
-            
-            if (!fStatus) {
-              console.log('Campo "Status" no encontrado en el proyecto.');
-              return;
-            }
-
             for (const issueNum of issueNumbers) {
               console.log(`Procesando issue #${issueNum}`);
               
@@ -1067,10 +1128,31 @@ jobs:
                 console.log(`No se pudo obtener issue #${issueNum}: ${e.message}`);
                 continue;
               }
+
+              if (issue.data.state !== 'open') {
+                console.log(`Issue #${issueNum} ya está cerrado. Saltando.`);
+                continue;
+              }
+              
+              const hasRfc = (issue.data.labels || []).some(l => norm(l.name) === 'rfc');
+              if (!hasRfc) {
+                console.log(`Issue #${issueNum} no tiene la etiqueta 'rfc'. Saltando.`);
+                continue;
+              }
               
               const hasUser = (issue.data.labels || []).some(l => norm(l.name) === 'user');
-              if (!hasUser) {
-                console.log(`Issue #${issueNum} no tiene la etiqueta 'user'.`);
+              
+              let projectId = null;
+              if (hasUser) {
+                projectId = await getUserProjByNum(PN_USER);
+                console.log(`Issue #${issueNum} es de 'user'. Buscando en proyecto USER.`);
+              } else {
+                projectId = await getUserProjByNum(PN_MAIN) || await getOrgProjByNum(PN_MAIN);
+                console.log(`Issue #${issueNum} es un RFC normal. Buscando en proyecto MAIN/ORG.`);
+              }
+              
+              if(!projectId) {
+                console.log(`No se pudo encontrar un ID de proyecto (MAIN o USER) para issue #${issueNum}.`);
                 continue;
               }
               
@@ -1080,7 +1162,14 @@ jobs:
                 continue;
               }
               
-              // --- CAMBIAR STATUS A "IN PROGRESS" ---
+              const allFields = await getFields(projectId);
+              const fStatus = allFields.find(f => norm(f?.name) === 'status');
+              
+              if (!fStatus) {
+                console.log(`Campo "Status" no encontrado en el proyecto (ID: ${projectId}).`);
+                continue;
+              }
+              
               const success = await setSelect(projectId, itemId, fStatus, 'In Progress');
               
               if (success) {
@@ -1093,8 +1182,9 @@ jobs:
             El Pull Request #${prNumber} fue cerrado sin merge. El estado del issue vuelve a \`In Progress\`.`
                             });
                           }
-                        }
+            }
             
+  # --- Job: process-ccc-commands (Sin cambios) ---
   process-ccc-commands:
     if: github.event_name == 'issue_comment' && github.event.action == 'created'
     runs-on: ubuntu-latest
@@ -1309,39 +1399,39 @@ jobs:
                   issue_number: issue.number,
                   body: `## ✅ Verificación Completa
 
-            ¡Excelente! Todos los campos requeridos están completos:
+              ¡Excelente! Todos los campos requeridos están completos:
 
-            ${complete.map(c => `- ${c}`).join('\n')}
+              ${complete.map(c => `- ${c}`).join('\n')}
 
-            Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
-                            });
-                            
-                            await github.rest.issues.addLabels({
-                              owner: context.repo.owner,
-                              repo: context.repo.repo,
-                              issue_number: issue.number,
-                              labels: ['approved']
-                            });
-                          } else {
-                            await github.rest.issues.createComment({
-                              owner: context.repo.owner,
-                              repo: context.repo.repo,
-                              issue_number: issue.number,
-                              body: `## ⚠️ Campos Faltantes
+              Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
+                              });
+                              
+                              await github.rest.issues.addLabels({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: issue.number,
+                                labels: ['approved']
+                              });
+                            } else {
+                              await github.rest.issues.createComment({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: issue.number,
+                                body: `## ⚠️ Campos Faltantes
 
-            Aún faltan los siguientes campos en el proyecto:
+              Aún faltan los siguientes campos en el proyecto:
 
-            ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
+              ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
 
-            **[Ir al proyecto para completarlos →](${userProjUrl})**
+              **[Ir al proyecto para completarlos →](${userProjUrl})**
 
-            Los siguientes campos ya están completos:
-            ${complete.map(c => `- ${c}`).join('\n')}
+              Los siguientes campos ya están completos:
+              ${complete.map(c => `- ${c}`).join('\n')}
 
-            Una vez completados, ejecuta \`/verificar\` nuevamente.`
-                            });
-                          }
-                          return;
+              Una vez completados, ejecuta \`/verificar\` nuevamente.`
+                              });
+                            }
+                            return;
             }
             
             if (cmd.startsWith('/actualizar')) {
@@ -1480,21 +1570,22 @@ jobs:
               if (updated.length === 0 && failed.length === 0) {
                  body = `## ⚠️ No se encontró información para actualizar
 
-            Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
+                Asegúrate de haber completado la plantilla en un comentario anterior con el formato correcto.
 
-            **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`;
-                          } else {
-                            body += `**[Ver en el proyecto →](${userProjUrl})**\n\nEjecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`;
-                          }
-                          
-                          await github.rest.issues.createComment({
-                            owner: context.repo.owner,
-                            repo: context.repo.repo,
-                            issue_number: issue.number,
-                            body: body
-                          });
+                **Pega la plantilla de \`/ayuda\` y llénala** en un nuevo comentario, luego ejecuta \`/actualizar\` otra vez.`;
+                              } else {
+                                body += `**[Ver en el proyecto →](${userProjUrl})**\n\nEjecuta \`/verificar\` para confirmar que todo esté completo y proceder con la aprobación.`;
+                              }
+                              
+                              await github.rest.issues.createComment({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: issue.number,
+                                body: body
+                              });
             }
 
+  # --- Job: set-project-status-on-close (Sin cambios) ---
   set-project-status-on-close:
     if: github.event_name == 'issues' && github.event.action == 'closed'
     runs-on: ubuntu-latest
@@ -1575,6 +1666,7 @@ jobs:
               }`, { projectId, itemId: item.id, fieldId: status.id, opt: opt.id }
             );
 
+  # --- Job: remove-project-item-on-delete (Sin cambios) ---
   remove-project-item-on-delete:
     if: github.event_name == 'issues' && github.event.action == 'deleted'
     runs-on: ubuntu-latest
