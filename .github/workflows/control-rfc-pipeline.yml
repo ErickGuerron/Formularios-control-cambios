@@ -969,11 +969,11 @@ jobs:
               issue_number: issue.number,
               body: `## ❌ Solicitud Denegada
 
-            El issue ha sido marcado como denegado y cerrado.
+              El issue ha sido marcado como denegado y cerrado.
 
-            **Estado actualizado:** Not Planned
-            **Estado CCC:** Denied`
-                        });
+              **Estado actualizado:** Not Planned
+              **Estado CCC:** Denied`
+                          });
 
   # --- Job: process-pr-link (ACTUALIZADO para bloquear PRs) ---
   process-pr-link:
@@ -1366,9 +1366,9 @@ jobs:
                   issue_number: issueNum,
                   body: `## ⏪ Reabierto
 
-            El Pull Request #${prNumber} fue cerrado sin merge. El estado del issue vuelve a \`In Progress\`.`
-                            });
-                          }
+              El Pull Request #${prNumber} fue cerrado sin merge. El estado del issue vuelve a \`In Progress\`.`
+                              });
+                            }
             }
             
   # --- Job: process-pr-merged (PR Aprobado) ---
@@ -1563,143 +1563,143 @@ jobs:
                 issue_number: issue.number,
                 body: `## 📚 Ayuda - Formulario CCC
 
-            ### Descripción de campos requeridos:
+              ### Descripción de campos requeridos:
 
-            **Change Type (Tipo de cambio)**
-            - Escribe una de las opciones: \`estandar\`, \`normal\`, o \`emergencia\`.
+              **Change Type (Tipo de cambio)**
+              - Escribe una de las opciones: \`estandar\`, \`normal\`, o \`emergencia\`.
 
-            **Impact (Impacto)**
-            - Describe qué sistemas, usuarios o procesos se verán afectados
-            - Indica el nivel de criticidad (Bajo/Medio/Alto)
-            - Ejemplo: "Afecta a 500 usuarios del módulo de facturación. Criticidad: Alta"
+              **Impact (Impacto)**
+              - Describe qué sistemas, usuarios o procesos se verán afectados
+              - Indica el nivel de criticidad (Bajo/Medio/Alto)
+              - Ejemplo: "Afecta a 500 usuarios del módulo de facturación. Criticidad: Alta"
 
-            **Implementation Plan (Plan de implementación)**
-            - Lista los pasos específicos para implementar el cambio
-            - Incluye recursos necesarios (personas, herramientas)
-            - Especifica duración estimada y ventana de mantenimiento
-            - Ejemplo:
-              1. Backup de base de datos (30 min)
-              2. Deploy de nueva versión (15 min)
-              3. Migración de datos (1 hora)
+              **Implementation Plan (Plan de implementación)**
+              - Lista los pasos específicos para implementar el cambio
+              - Incluye recursos necesarios (personas, herramientas)
+              - Especifica duración estimada y ventana de mantenimiento
+              - Ejemplo:
+                1. Backup de base de datos (30 min)
+                2. Deploy de nueva versión (15 min)
+                3. Migración de datos (1 hora)
 
-            **RollBack Planning (Plan de reversa)**
-            - Describe cómo revertir el cambio si algo sale mal
-            - Incluye comandos o scripts específicos
-            - Indica tiempo estimado de recuperación
-            - Especifica si es completamente reversible
+              **RollBack Planning (Plan de reversa)**
+              - Describe cómo revertir el cambio si algo sale mal
+              - Incluye comandos o scripts específicos
+              - Indica tiempo estimado de recuperación
+              - Especifica si es completamente reversible
 
-            **Test Planning (Plan de pruebas)**
-            - Detalla la estrategia de testing
-            - Lista casos de prueba críticos
-            - Incluye tests unitarios, integración y E2E
-            - Define criterios de éxito
+              **Test Planning (Plan de pruebas)**
+              - Detalla la estrategia de testing
+              - Lista casos de prueba críticos
+              - Incluye tests unitarios, integración y E2E
+              - Define criterios de éxito
 
-            **Approvers (Aprobadores)**
-            - Menciona (@usuario) a todas las personas que deben aprobar
-            - Típicamente: Tech Lead, Product Owner, DevOps
-            - Ejemplo: @tech-lead @product-owner @devops-team
+              **Approvers (Aprobadores)**
+              - Menciona (@usuario) a todas las personas que deben aprobar
+              - Típicamente: Tech Lead, Product Owner, DevOps
+              - Ejemplo: @tech-lead @product-owner @devops-team
 
-            **Start date (Fecha de inicio)**
-            - Fecha en formato YYYY-MM-DD
-            - Ejemplo: 2025-11-15
+              **Start date (Fecha de inicio)**
+              - Fecha en formato YYYY-MM-DD
+              - Ejemplo: 2025-11-15
 
-            **Target date (Fecha objetivo)**
-            - Fecha límite en formato YYYY-MM-DD
-            - Ejemplo: 2025-11-30
+              **Target date (Fecha objetivo)**
+              - Fecha límite en formato YYYY-MM-DD
+              - Ejemplo: 2025-11-30
 
-            ### Comandos disponibles:
-            - \`/verificar\` - Verifica si completaste los campos en el proyecto
-            - \`/actualizar\` - Actualiza el proyecto con info de este issue
-            - \`/ayuda\` - Muestra esta ayuda`
-                          });
-                          return;
-            }
-            
-            if (cmd.startsWith('/verificar')) {
-              const fields = await getFields(projectId);
-              const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
-              
-              const fChangeType = by(['Change Type', 'Tipo de cambio']);
-              const fImpact   = by(['Impact']);
-              const fPlan     = by(['Implementation Plan']);
-              const fRollback = by(['RollBack Planning','Rollback Plan']);
-              const fPruebas  = by(['Test Planning']);
-              const fAprob    = by(['Approvers']);
-              const fStart    = by(['Start date']);
-              const fTarget   = by(['Target date']);
-              
-              const values = await getFieldValues(itemId);
-              function getValue(field){
-                if(!field) return null;
-                const v = values.find(n => norm(n.field?.name) === norm(field.name));
-                if(!v) return null;
-                if ('text' in v) return (v.text||'').trim();
-                if ('date' in v) return (v.date||'').trim();
-                if ('name' in v) return (v.name||'').trim();
-                return null;
-              }
-              
-              const missing = [];
-              const complete = [];
-              
-              const checkField = (field, name) => {
-                const val = getValue(field);
-                if (!val) {
-                  missing.push(name);
-                } else {
-                  complete.push(`${name}: ✅`);
-                }
-              };
-              
-              checkField(fChangeType, 'Change Type');
-              checkField(fImpact, 'Impact');
-              checkField(fPlan, 'Implementation Plan');
-              checkField(fRollback, 'RollBack Planning');
-              checkField(fPruebas, 'Test Planning');
-              checkField(fAprob, 'Approvers');
-              checkField(fStart, 'Start date');
-              checkField(fTarget, 'Target date');
-              
-              if (missing.length === 0) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issue.number,
-                  body: `## ✅ Verificación Completa
+              ### Comandos disponibles:
+              - \`/verificar\` - Verifica si completaste los campos en el proyecto
+              - \`/actualizar\` - Actualiza el proyecto con info de este issue
+              - \`/ayuda\` - Muestra esta ayuda`
+                            });
+                            return;
+                          }
+                          
+                          if (cmd.startsWith('/verificar')) {
+                            const fields = await getFields(projectId);
+                            const by = (names) => names.map(n=>fields.find(f=>norm(f?.name)===norm(n))).find(Boolean);
+                            
+                            const fChangeType = by(['Change Type', 'Tipo de cambio']);
+                            const fImpact   = by(['Impact']);
+                            const fPlan     = by(['Implementation Plan']);
+                            const fRollback = by(['RollBack Planning','Rollback Plan']);
+                            const fPruebas  = by(['Test Planning']);
+                            const fAprob    = by(['Approvers']);
+                            const fStart    = by(['Start date']);
+                            const fTarget   = by(['Target date']);
+                            
+                            const values = await getFieldValues(itemId);
+                            function getValue(field){
+                              if(!field) return null;
+                              const v = values.find(n => norm(n.field?.name) === norm(field.name));
+                              if(!v) return null;
+                              if ('text' in v) return (v.text||'').trim();
+                              if ('date' in v) return (v.date||'').trim();
+                              if ('name' in v) return (v.name||'').trim();
+                              return null;
+                            }
+                            
+                            const missing = [];
+                            const complete = [];
+                            
+                            const checkField = (field, name) => {
+                              const val = getValue(field);
+                              if (!val) {
+                                missing.push(name);
+                              } else {
+                                complete.push(`${name}: ✅`);
+                              }
+                            };
+                            
+                            checkField(fChangeType, 'Change Type');
+                            checkField(fImpact, 'Impact');
+                            checkField(fPlan, 'Implementation Plan');
+                            checkField(fRollback, 'RollBack Planning');
+                            checkField(fPruebas, 'Test Planning');
+                            checkField(fAprob, 'Approvers');
+                            checkField(fStart, 'Start date');
+                            checkField(fTarget, 'Target date');
+                            
+                            if (missing.length === 0) {
+                              await github.rest.issues.createComment({
+                                owner: context.repo.owner,
+                                repo: context.repo.repo,
+                                issue_number: issue.number,
+                                body: `## ✅ Verificación Completa
 
               ¡Excelente! Todos los campos requeridos están completos:
 
               ${complete.map(c => `- ${c}`).join('\n')}
 
               Ahora puedes agregar la etiqueta \`approved\` para completar la aprobación.`
-                              });
-                              
-                              await github.rest.issues.addLabels({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: issue.number,
-                                labels: ['approved']
-                              });
-                            } else {
-                              await github.rest.issues.createComment({
-                                owner: context.repo.owner,
-                                repo: context.repo.repo,
-                                issue_number: issue.number,
-                                body: `## ⚠️ Campos Faltantes
+                });
+                
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['approved']
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `## ⚠️ Campos Faltantes
 
-              Aún faltan los siguientes campos en el proyecto:
+            Aún faltan los siguientes campos en el proyecto:
 
-              ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
+            ${missing.map(m => `- [ ] \`${m}\``).join('\n')}
 
-              **[Ir al proyecto para completarlos →](${userProjUrl})**
+            **[Ir al proyecto para completarlos →](${userProjUrl})**
 
-              Los siguientes campos ya están completos:
-              ${complete.map(c => `- ${c}`).join('\n')}
+            Los siguientes campos ya están completos:
+            ${complete.map(c => `- ${c}`).join('\n')}
 
-              Una vez completados, ejecuta \`/verificar\` nuevamente.`
-                              });
-                            }
-                            return;
+            Una vez completados, ejecuta \`/verificar\` nuevamente.`
+                            });
+                          }
+                          return;
             }
             
             if (cmd.startsWith('/actualizar')) {
