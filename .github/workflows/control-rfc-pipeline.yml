@@ -60,7 +60,6 @@ jobs:
 
             const isRfc = wanted.has('rfc') || body.includes('### Plan de implementación');
             if (!isRfc) {
-              console.log('No es un RFC. Omitiendo.');
               return;
             }
 
@@ -142,7 +141,6 @@ jobs:
             let itemId;
 
             if (!item) {
-              console.log(`Issue ${issue.number} no encontrado en el proyecto. Añadiendo...`);
               const addRes = await github.graphql(
                 `mutation($projectId:ID!, $contentId:ID!){
                   addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ 
@@ -152,7 +150,6 @@ jobs:
               );
               itemId = addRes.addProjectV2ItemById.item.id;
             } else {
-              console.log(`Issue ${issue.number} ya existe en el proyecto. Actualizando...`);
               itemId = item.id;
             }
             
@@ -180,17 +177,18 @@ jobs:
               .map(n => fields.find(f => f?.name?.toLowerCase() === n.toLowerCase()))
               .find(Boolean)
             
-            const fStatus   = byAnyName(['Status','Estado'])
-            const fTipo     = byAnyName(['Change Type','Tipo de cambio'])
-            const fRiesgo   = byAnyName(['Risk','Riesgo'])
-            const fImpacto  = byAnyName(['Impact','Impacto'])
-            const fPlan     = byAnyName(['Implementation Plan','Plan de implementación'])
-            const fRollback = byAnyName(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
-            const fPruebas  = byAnyName(['Test Planning','Plan de pruebas'])
-            const fVIni     = byAnyName(['Init','Window – Start','Ventana – Inicio','Window - Start'])
-            const fVFin     = byAnyName(['Completion','Window – End','Ventana – Fin','Window - End'])
-            const fAprob    = byAnyName(['Approvers','Required Approvers','Aprobadores requeridos'])
-            const fSolic    = byAnyName(['Solicitante','Solicitor','Applicant','Requester'])
+            const fStatus     = byAnyName(['Status','Estado'])
+            const fStatusCcc  = byAnyName(['Status_CCC','Status CCC','status_ccc'])
+            const fTipo       = byAnyName(['Change Type','Tipo de cambio'])
+            const fRiesgo     = byAnyName(['Risk','Riesgo'])
+            const fImpacto    = byAnyName(['Impact','Impacto'])
+            const fPlan       = byAnyName(['Implementation Plan','Plan de implementación'])
+            const fRollback   = byAnyName(['RollBack Planning','Rollback Plan','Plan de reversa (rollback)'])
+            const fPruebas    = byAnyName(['Test Planning','Plan de pruebas'])
+            const fVIni       = byAnyName(['Init','Window – Start','Ventana – Inicio','Window - Start'])
+            const fVFin       = byAnyName(['Completion','Window – End','Ventana – Fin','Window - End'])
+            const fAprob      = byAnyName(['Approvers','Required Approvers','Aprobadores requeridos'])
+            const fSolic      = byAnyName(['Solicitante','Solicitor','Applicant','Requester'])
             
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
             function resolveOptionId(field, value, map) {
@@ -229,12 +227,8 @@ jobs:
             }
             
             if (context.payload.action === 'opened') {
-              const notPlannedOpt = (fStatus.options||[]).find(o=>norm(o.name)==='not planned' || norm(o.name)==='no planeado')
-              if (notPlannedOpt) {
-                await setSelect(fStatus, 'Not Planned');
-              } else {
-                await setSelect(fStatus, 'Todo', { 'todo':'todo' });
-              }
+              await setSelect(fStatus, 'Backlog')
+              await setSelect(fStatusCcc, 'Inbox')
             }
             
             await setSelect(fTipo,   tipo,   { 'estandar':'estandar', 'estándar':'estandar', 'normal':'normal', 'emergencia':'emergencia', 'urgente':'emergencia' })
@@ -300,14 +294,13 @@ jobs:
             const reason = context.payload.issue.state_reason
             let optionName = 'Done';
             if (reason === 'not_planned') {
-              optionName = 'Not Planned';
+              optionName = 'Backlog';
             }
             
             const norm = (s) => (s ?? '').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim().toLowerCase()
             const opt = (status.options||[]).find(o=>norm(o.name) === norm(optionName) || norm(o.name) === norm('no planeado'))
             
             if(!opt) {
-              console.log(`Opción de status "${optionName}" no encontrada.`);
               return
             }
 
