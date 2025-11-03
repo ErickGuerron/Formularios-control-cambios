@@ -3,9 +3,6 @@ name: RFC Controller
 on:
   issues:
     types: [opened, edited, labeled, closed, deleted]
-  project_v2_item:
-    types: [edited]
-    fields: [status_CCC]
 
 concurrency:
   group: rfc-${{ github.event.issue.number }}-${{ github.event.action }}
